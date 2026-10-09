@@ -26,7 +26,10 @@ def mesh_to_bpy(mesh: MeshData, name: str) -> Any:
     mats = []
     for m in mesh.materials:
         ma = bpy.data.materials.new(m.name)
-        ma.use_nodes = True
+        # Blender 4.x+: materiais novos já usam nodes; o setter de
+        # `use_nodes` está deprecated (remoção prevista na 6.0).
+        if bpy.app.version < (4, 0, 0) and not ma.use_nodes:
+            ma.use_nodes = True
         bsdf = None
         for n in ma.node_tree.nodes:
             if n.type == "BSDF_PRINCIPLED":
