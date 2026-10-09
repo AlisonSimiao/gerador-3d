@@ -1,0 +1,12 @@
+{
+  "type": "house",
+  "seed": 42,
+  "width": 6.0,
+  "depth": 5.0,
+  "floors": 1,
+  "roof_type": "gable",
+  "chimney": true,
+  "windows": 4,
+  "wall_material": "plaster",
+  "style": "medieval_lowpoly"
+}

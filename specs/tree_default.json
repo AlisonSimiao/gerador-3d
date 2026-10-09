@@ -1,0 +1,10 @@
+{
+  "type": "tree",
+  "seed": 13,
+  "trunk_height": 2.5,
+  "trunk_radius": 0.25,
+  "canopy_type": "cluster",
+  "leaf_color": "green",
+  "lean": 0.05,
+  "style": "medieval_lowpoly"
+}

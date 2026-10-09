@@ -1,0 +1,10 @@
+{
+  "type": "sword",
+  "seed": 7,
+  "blade_length": 0.9,
+  "blade_width": 0.08,
+  "guard_type": "straight",
+  "grip_length": 0.15,
+  "pommel": "round",
+  "style": "medieval_lowpoly"
+}
