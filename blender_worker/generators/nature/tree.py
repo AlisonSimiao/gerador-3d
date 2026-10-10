@@ -48,7 +48,7 @@ class TreeGenerator(BaseGenerator[TreeSpec]):
         elif s.canopy_form == "conical":
             b.cylinder(top_x, top_y, cz, 1.3, 0.05, 2.2, 7, leaf_m)
             b.cylinder(top_x, top_y, cz + 1.4, 0.9, 0.05, 1.6, 7, leaf_m)
-        else:  # sphere
+        else:  # round
             b.octahedron(top_x, top_y, cz + 1.0, 1.4, mat=leaf_m)
             b.octahedron(top_x + 0.5, top_y - 0.3, cz + 0.5, 0.8, mat=leaf_m)
         b.mesh.mark_component("canopy", start)
