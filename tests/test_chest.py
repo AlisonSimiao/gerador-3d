@@ -181,6 +181,26 @@ def test_chest_distinct_seeds_vary_observably_but_stay_recognizable() -> None:
     assert all(check["ok"] for check in second_checks.values())
 
 
+def test_chest_distinct_seeds_vary_observably_at_chest_scale() -> None:
+    """Duas seeds movem vértices em escala visual (>3cm no baú default).
+
+    A variação vive nos detalhes secundários (largura/posição das
+    cintas, tamanho/posição da fechadura): mesma topologia e mesmo
+    envelope, geometria visivelmente distinta.
+    """
+    descriptor = get_descriptor("chest")
+
+    first, _ = descriptor.inspect(_chest(seed=7))
+    second, _ = descriptor.inspect(_chest(seed=8))
+
+    assert len(first.vertices) == len(second.vertices)
+    displacement = max(
+        max(abs(a - b) for a, b in zip(first.vertices[i], second.vertices[i]))
+        for i in range(len(first.vertices))
+    )
+    assert displacement > 0.03
+
+
 def test_chest_seed_never_contradicts_dimensions_options_or_materials() -> None:
     descriptor = get_descriptor("chest")
     for seed in range(20):

@@ -10,7 +10,9 @@ import struct
 import tempfile
 import time
 import tracemalloc
-from typing import Any
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any, TypeVar
 
 from . import generators  # noqa: F401  (registra os 4 geradores)
 from .registry import get_descriptor
@@ -20,14 +22,30 @@ from .validators import check_glb
 from .failures import FailureCode, stage_for_code, structured_error
 
 
+@dataclass
+class AttemptMetrics:
+    """Per-stage durations plus the tracemalloc peak for one attempt."""
+
+    stages: dict[str, float] = field(default_factory=dict)
+    peak_memory_bytes: int = 0
+
+    def without_total(self) -> dict[str, float]:
+        """Partial laps without the running total (failure paths)."""
+        return {
+            key: value
+            for key, value in self.stages.items()
+            if key != "total_seconds"
+        }
+
+
 class GenerateError(RuntimeError):
     """A structured pipeline failure."""
-    def __init__(self, message: str, code: FailureCode = FailureCode.VALIDATION_FAILED,
-                 *, stages: dict[str, float] | None = None, peak: int | None = None) -> None:
+    def __init__(self, message: str,
+                 code: FailureCode = FailureCode.VALIDATION_FAILED,
+                 *, metrics: AttemptMetrics | None = None) -> None:
         super().__init__(message)
         self.code = code.value
-        self.stages = dict(stages) if stages else {}
-        self.peak = peak
+        self.metrics = metrics if metrics is not None else AttemptMetrics()
 
 
 class _StageClock:
@@ -56,16 +74,39 @@ class _StageClock:
     def laps(self) -> dict[str, float]:
         return dict(self._laps)
 
-    def snapshot(self) -> tuple[dict[str, float], int]:
+    def snapshot(self) -> AttemptMetrics:
         stages = dict(self._laps)
         stages["total_seconds"] = time.perf_counter() - self._start
         _, peak = tracemalloc.get_traced_memory()
-        return stages, peak
+        return AttemptMetrics(stages, peak)
 
     def stop(self) -> None:
         if self._owns_tracing:
             tracemalloc.stop()
             self._owns_tracing = False
+
+
+T = TypeVar("T")
+
+
+def _run_stage(name: str, code: FailureCode, fn: Callable[[], T],
+               clock: _StageClock, *, record_lap: bool = True) -> T:
+    """Run one pipeline stage, mapping unexpected errors to its code.
+
+    A `GenerateError` raised inside already carries its own code and
+    passes through untouched; anything else becomes `code`. Successful
+    stages record a lap, except the publication swap, whose timing is
+    not part of the staged metrics contract (`record_lap=False`).
+    """
+    try:
+        result = fn()
+    except GenerateError:
+        raise
+    except Exception as error:
+        raise GenerateError(str(error), code) from error
+    if record_lap:
+        clock.lap(name)
+    return result
 
 
 # ---------------------------------------------------------------- Orquestração
@@ -84,91 +125,126 @@ def inspect(spec: AnySpec) -> tuple[MeshData, dict]:
     return descriptor.inspect(spec)
 
 
+def _ensure_official_platform() -> None:
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        raise GenerateError(
+            "plataforma oficial requer Linux x86_64",
+            FailureCode.ENVIRONMENT_UNAVAILABLE,
+        )
+    if not bpy_available():
+        raise GenerateError(
+            "bpy 5.2.2 indisponível; use inspect() para a IR",
+            FailureCode.ENVIRONMENT_UNAVAILABLE,
+        )
+
+
+def _build_scene(mesh: MeshData, spec_type: str) -> None:
+    import bpy  # type: ignore[import-not-found]
+    from .bpy_build import mesh_to_bpy
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    mesh_to_bpy(mesh, spec_type)
+
+
+def _publish(stage: str, destination: str) -> None:
+    backup = destination + ".previous"
+    if os.path.exists(backup):
+        shutil.rmtree(backup)
+    if os.path.exists(destination):
+        os.replace(destination, backup)
+    os.replace(stage, destination)
+    if os.path.exists(backup):
+        shutil.rmtree(backup)
+
+
 def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
     """Produce an atomic official Result of Generation using Blender."""
     clock = _StageClock()
     try:
-        if platform.system() != "Linux" or platform.machine() != "x86_64":
-            raise GenerateError("plataforma oficial requer Linux x86_64", FailureCode.ENVIRONMENT_UNAVAILABLE)
-        if not bpy_available():
-            raise GenerateError("bpy 5.2.2 indisponível; use inspect() para a IR", FailureCode.ENVIRONMENT_UNAVAILABLE)
-        destination = os.path.abspath(out_dir); parent = os.path.dirname(destination)
+        _ensure_official_platform()
+        destination = os.path.abspath(out_dir)
+        parent = os.path.dirname(destination)
         os.makedirs(parent, exist_ok=True)
         if os.path.exists(destination) and os.listdir(destination) and not force:
-            raise GenerateError("destino já contém um Resultado de Geração", FailureCode.PUBLICATION_FAILED)
+            raise GenerateError(
+                "destino já contém um Resultado de Geração",
+                FailureCode.PUBLICATION_FAILED,
+            )
         attempt_id = os.environ.get("GERADOR_3D_ATTEMPT_ID", "local")
-        stage = tempfile.mkdtemp(prefix=f".generation-{attempt_id}-", dir=parent)
+        stage = tempfile.mkdtemp(
+            prefix=f".generation-{attempt_id}-", dir=parent
+        )
         mesh, checks = inspect(spec)
         clock.lap("inspect")
         failed = {k: v for k, v in checks.items() if not v["ok"]}
         if failed:
             shutil.rmtree(stage)
-            stages, peak = clock.snapshot()
-            raise GenerateError(f"validação falhou: {list(failed)}", FailureCode.VALIDATION_FAILED,
-                                stages={k: v for k, v in stages.items() if k != "total_seconds"},
-                                peak=peak)
+            metrics = clock.snapshot()
+            raise GenerateError(
+                f"validação falhou: {list(failed)}",
+                FailureCode.VALIDATION_FAILED,
+                metrics=AttemptMetrics(
+                    metrics.without_total(), metrics.peak_memory_bytes
+                ),
+            )
         try:
-            import bpy  # type: ignore[import-not-found]
-            from .bpy_build import mesh_to_bpy
-            try:
-                bpy.ops.wm.read_factory_settings(use_empty=True); mesh_to_bpy(mesh, spec.type)
-            except GenerateError:
-                raise
-            except Exception as error:
-                raise GenerateError(str(error), FailureCode.BUILD_FAILED) from error
-            clock.lap("build")
+            _run_stage(
+                "build", FailureCode.BUILD_FAILED,
+                lambda: _build_scene(mesh, spec.type), clock,
+            )
             glb_path = os.path.join(stage, "model.glb")
-            # Explicit internal→glTF conversion: mesh_to_bpy rotated the IR
-            # into Blender space; export_yup=True + metric units emit +Y up / meters.
-            try:
-                _export_glb(glb_path)
-            except GenerateError:
-                raise
-            except Exception as error:
-                raise GenerateError(str(error), FailureCode.EXPORT_FAILED) from error
-            clock.lap("export")
-            try:
-                checks["reimport"] = _reimport_gate(glb_path, mesh)
-            except GenerateError:
-                raise
-            except Exception as error:
-                raise GenerateError(str(error), FailureCode.REIMPORT_FAILED) from error
-            clock.lap("reimport")
-            if not checks["reimport"]["ok"]: raise GenerateError(checks["reimport"]["detail"], FailureCode.REIMPORT_FAILED)
+            # Explicit internal→glTF conversion: mesh_to_bpy rotated the
+            # IR into Blender space; export_yup=True + metric units emit
+            # +Y up / meters.
+            _run_stage(
+                "export", FailureCode.EXPORT_FAILED,
+                lambda: _export_glb(glb_path), clock,
+            )
+            checks["reimport"] = _run_stage(
+                "reimport", FailureCode.REIMPORT_FAILED,
+                lambda: _reimport_gate(glb_path, mesh), clock,
+            )
+            if not checks["reimport"]["ok"]:
+                raise GenerateError(
+                    checks["reimport"]["detail"],
+                    FailureCode.REIMPORT_FAILED,
+                )
             from .preview import render_official_preview
-            try:
-                checks["preview"] = render_official_preview(os.path.join(stage, "preview.png"))
-            except GenerateError:
-                raise
-            except Exception as error:
-                raise GenerateError(str(error), FailureCode.RENDER_FAILED) from error
-            clock.lap("render")
-            stages, peak = clock.snapshot()
-            report = _report(spec, mesh, checks, ok=True, renderer="bpy", stages=stages, peak=peak)
+            checks["preview"] = _run_stage(
+                "render", FailureCode.RENDER_FAILED,
+                lambda: render_official_preview(
+                    os.path.join(stage, "preview.png")
+                ),
+                clock,
+            )
+            report = _report(
+                spec, mesh, checks, ok=True, renderer="bpy",
+                metrics=clock.snapshot(),
+            )
             _write_report(stage, report)
-            try:
-                backup = destination + ".previous"
-                if os.path.exists(backup): shutil.rmtree(backup)
-                if os.path.exists(destination): os.replace(destination, backup)
-                os.replace(stage, destination)
-                if os.path.exists(backup): shutil.rmtree(backup)
-            except GenerateError:
-                raise
-            except Exception as error:
-                raise GenerateError(str(error), FailureCode.PUBLICATION_FAILED) from error
+            _run_stage(
+                "publication", FailureCode.PUBLICATION_FAILED,
+                lambda: _publish(stage, destination), clock,
+                record_lap=False,
+            )
             return report
         except Exception as error:
             shutil.rmtree(stage, ignore_errors=True)
             if isinstance(error, GenerateError):
-                if not error.stages:
-                    error.stages = clock.laps
-                if error.peak is None:
-                    error.peak = clock.snapshot()[1]
+                if not error.metrics.stages:
+                    error.metrics.stages = clock.laps
+                if not error.metrics.peak_memory_bytes:
+                    error.metrics.peak_memory_bytes = (
+                        clock.snapshot().peak_memory_bytes
+                    )
                 raise
-            stages, peak = clock.snapshot()
-            raise GenerateError(str(error), FailureCode.BUILD_FAILED,
-                                stages={k: v for k, v in stages.items() if k != "total_seconds"},
-                                peak=peak) from error
+            metrics = clock.snapshot()
+            raise GenerateError(
+                str(error), FailureCode.BUILD_FAILED,
+                metrics=AttemptMetrics(
+                    metrics.without_total(), metrics.peak_memory_bytes
+                ),
+            ) from error
     finally:
         clock.stop()
 
@@ -236,61 +312,25 @@ def _anchor_holds(bounds_min: tuple[float, float, float],
     return False
 
 
-def _reimport_gate(path: str, mesh: MeshData) -> dict:
-    """Prove the delivered Asset by reimporting it with Blender (ADR 0006).
+def _reject_reimport(expected_tris: int, anchor_kind: str,
+                     detail: str, **fields: Any) -> dict:
+    result = {"ok": False, "detail": f"reimportação rejeitada: {detail}",
+              "mesh_count": 0, "root_nodes": 0,
+              "root_transform_identity": False,
+              "coordinate_system": dict(GLTF_COORDINATE_SYSTEM),
+              "topology_ok": False, "tri_count": 0,
+              "tri_count_expected": expected_tris,
+              "materials_ok": False, "material_names": [],
+              "anchor_ok": False, "anchor_kind": anchor_kind,
+              "transforms_ok": False,
+              "units_ok": False, "units": {"system": None, "scale_length": None},
+              "integrity_ok": False}
+    result.update(fields)
+    return result
 
-    Runs inside the attempt, before any publication: topology (no degenerate
-    faces, no orphan verts, tri count preserved), assigned materials (every
-    expected material present and used by ≥1 face), Anchor at the origin,
-    identity transforms, metric units with matching extents, and overall
-    integrity of the roundtrip.
-    """
-    import bpy  # type: ignore[import-not-found]
 
-    expected_names = sorted({mesh.materials[i].name for i in set(mesh.face_materials)})
-    # Actual tris handed to Blender. (MeshData.tri_count overcounts quads and
-    # stays as-is: budgets and the report contract depend on it.)
-    expected_tris = len(mesh.triangulated())
-    exp_min, exp_max = _expected_reimport_bounds(mesh)
-    expected_extent = max(hi - lo for lo, hi in zip(exp_min, exp_max))
-
-    def _reject(detail: str, **fields: Any) -> dict:
-        result = {"ok": False, "detail": f"reimportação rejeitada: {detail}",
-                  "mesh_count": 0, "root_nodes": 0,
-                  "root_transform_identity": False,
-                  "coordinate_system": dict(GLTF_COORDINATE_SYSTEM),
-                  "topology_ok": False, "tri_count": 0,
-                  "tri_count_expected": expected_tris,
-                  "materials_ok": False, "material_names": [],
-                  "anchor_ok": False, "anchor_kind": mesh.anchor_kind.value,
-                  "transforms_ok": False,
-                  "units_ok": False, "units": {"system": None, "scale_length": None},
-                  "integrity_ok": False}
-        result.update(fields)
-        return result
-
-    smoke = check_glb(path)
-    if not smoke["ok"]:
-        return _reject(f"GLB inválido ({smoke['detail']})")
-    bpy.ops.wm.read_factory_settings(use_empty=True)
-    try:
-        result = bpy.ops.import_scene.gltf(filepath=path)
-    except (OSError, RuntimeError) as error:
-        return _reject(f"o importador glTF falhou ({error})")
-    if "FINISHED" not in result:
-        return _reject("o importador glTF não concluiu a reimportação")
-    bpy.context.view_layer.update()
-    objects = list(bpy.context.scene.objects)
-    roots = [obj for obj in objects if obj.parent is None]
-    meshes = [obj for obj in objects if obj.type == "MESH"]
-    if len(meshes) != 1 or len(roots) != 1:
-        return _reject(f"esperado 1 mesh/1 nó raiz, obtido {len(meshes)}/{len(roots)}",
-                       mesh_count=len(meshes), root_nodes=len(roots))
-    obj = meshes[0]
-    data = obj.data
-    identity = _identity_4x4(obj.matrix_world)
-    transforms_ok = bool(identity) and all(_identity_4x4(o.matrix_world) for o in objects)
-
+def _reimport_topology(data: Any, expected_tris: int) -> dict[str, Any]:
+    """No degenerate faces, no orphan verts, tri count preserved."""
     polygons = list(data.polygons)
     degenerate = [p.index for p in polygons
                   if len(p.loop_indices) < 3 or p.area < REIMPORT_MIN_FACE_AREA]
@@ -298,89 +338,231 @@ def _reimport_gate(path: str, mesh: MeshData) -> dict:
     for poly in polygons:
         used.update(poly.vertices)
     orphan = len(used) != len(data.vertices)
-    # The glTF importer rebuilds quads from triangle pairs, so polygon count
-    # is not the tri count: count loop triangles (what the exporter wrote).
+    # The glTF importer rebuilds quads from triangle pairs, so polygon
+    # count is not the tri count: count loop triangles instead (what the
+    # exporter wrote).
     data.calc_loop_triangles()
     tri_count = len(data.loop_triangles)
-    topology_ok = not degenerate and not orphan and tri_count == expected_tris
+    return {
+        "topology_ok": not degenerate and not orphan
+        and tri_count == expected_tris,
+        "tri_count": tri_count,
+        "degenerate_count": len(degenerate),
+        "orphan": orphan,
+    }
 
+
+def _reimport_materials(data: Any, expected_names: list[str]) -> dict[str, Any]:
+    """Every expected material present and used by ≥1 face."""
+    polygons = list(data.polygons)
     names = [m.name if m is not None else "" for m in data.materials]
     slots_used = {p.material_index for p in polygons}
-    materials_ok = (set(names) == set(expected_names) and len(names) == len(expected_names)
-                    and all(p.material_index < len(names) for p in polygons)
-                    and set(range(len(names))) <= slots_used)
+    materials_ok = (
+        set(names) == set(expected_names)
+        and len(names) == len(expected_names)
+        and all(p.material_index < len(names) for p in polygons)
+        and set(range(len(names))) <= slots_used
+    )
+    return {"materials_ok": materials_ok, "material_names": names}
 
+
+def _reimport_placement(objects: list[Any], obj: Any, data: Any, mesh: MeshData,
+                        units: Any,
+                        exp_min: tuple[float, float, float],
+                        exp_max: tuple[float, float, float],
+                        expected_extent: float) -> dict[str, Any]:
+    """Anchor at the origin, identity transforms, metric units extents."""
+    identity = _identity_4x4(obj.matrix_world)
+    transforms_ok = bool(identity) and all(
+        _identity_4x4(o.matrix_world) for o in objects
+    )
     world = [obj.matrix_world @ v.co for v in data.vertices]
-    wmin = (min(c.x for c in world), min(c.y for c in world), min(c.z for c in world))
-    wmax = (max(c.x for c in world), max(c.y for c in world), max(c.z for c in world))
+    wmin = (
+        min(c.x for c in world),
+        min(c.y for c in world),
+        min(c.z for c in world),
+    )
+    wmax = (
+        max(c.x for c in world),
+        max(c.y for c in world),
+        max(c.z for c in world),
+    )
     anchor_ok = _anchor_holds(wmin, wmax, mesh.anchor_kind)
-    bounds_ok = all(abs(a - b) <= REIMPORT_TOLERANCE_M
-                    for a, b in zip(wmin + wmax, exp_min + exp_max))
-
-    units = bpy.context.scene.unit_settings
+    bounds_ok = all(
+        abs(a - b) <= REIMPORT_TOLERANCE_M
+        for a, b in zip(wmin + wmax, exp_min + exp_max)
+    )
     extent = max(hi - lo for lo, hi in zip(wmin, wmax))
-    units_ok = (units.system == "METRIC" and units.scale_length == 1.0
-                and REIMPORT_MIN_EXTENT_M <= extent <= REIMPORT_MAX_EXTENT_M
-                and abs(extent - expected_extent)
-                <= REIMPORT_TOLERANCE_M + 1e-3 * expected_extent)
-
-    integrity_ok = bool(topology_ok and materials_ok and anchor_ok and bounds_ok
-                        and transforms_ok and units_ok)
-    ok = bool(identity and materials_ok and integrity_ok)
+    units_ok = (
+        units.system == "METRIC" and units.scale_length == 1.0
+        and REIMPORT_MIN_EXTENT_M <= extent <= REIMPORT_MAX_EXTENT_M
+        and abs(extent - expected_extent)
+        <= REIMPORT_TOLERANCE_M + 1e-3 * expected_extent
+    )
+    return {
+        "root_transform_identity": bool(identity),
+        "transforms_ok": bool(transforms_ok),
+        "anchor_ok": bool(anchor_ok),
+        "bounds_ok": bool(bounds_ok),
+        "units_ok": bool(units_ok),
+        "units": {
+            "system": str(units.system),
+            "scale_length": float(units.scale_length),
+        },
+    }
+def _reimport_integrity(topology: dict[str, Any], materials: dict[str, Any],
+                        placement: dict[str, Any], mesh: MeshData,
+                        expected_names: list[str],
+                        expected_tris: int) -> dict[str, Any]:
+    """Combine the per-concern checks into the roundtrip verdict."""
+    integrity_ok = bool(
+        topology["topology_ok"] and materials["materials_ok"]
+        and placement["anchor_ok"] and placement["bounds_ok"]
+        and placement["transforms_ok"] and placement["units_ok"]
+    )
+    ok = bool(
+        placement["root_transform_identity"]
+        and materials["materials_ok"]
+        and integrity_ok
+    )
     if ok:
-        detail = (f"{len(meshes)} mesh, 1 nó raiz, materiais preservados, "
-                  "topologia/âncora/unidades íntegras")
+        detail = (
+            "1 mesh, 1 nó raiz, materiais preservados, "
+            "topologia/âncora/unidades íntegras"
+        )
     else:
         reasons = []
-        if not topology_ok:
-            if degenerate:
-                reasons.append(f"{len(degenerate)} face(s) degenerada(s)")
-            if orphan:
+        if not topology["topology_ok"]:
+            if topology["degenerate_count"]:
+                reasons.append(
+                    f"{topology['degenerate_count']} face(s) degenerada(s)"
+                )
+            if topology["orphan"]:
                 reasons.append("vértices órfãos")
-            if tri_count != expected_tris:
-                reasons.append(f"{tri_count} tris reimportados ≠ {expected_tris} esperados")
-        if not materials_ok:
-            reasons.append(f"materiais {names} ≠ {expected_names} ou slots sem faces")
-        if not anchor_ok:
-            reasons.append(f"Âncora {mesh.anchor_kind.value} fora da origem")
-        if not bounds_ok:
+            if topology["tri_count"] != expected_tris:
+                reasons.append(
+                    f"{topology['tri_count']} tris reimportados ≠ "
+                    f"{expected_tris} esperados"
+                )
+        if not materials["materials_ok"]:
+            reasons.append(
+                f"materiais {materials['material_names']} ≠ "
+                f"{expected_names} ou slots sem faces"
+            )
+        if not placement["anchor_ok"]:
+            reasons.append(
+                f"Âncora {mesh.anchor_kind.value} fora da origem"
+            )
+        if not placement["bounds_ok"]:
             reasons.append("limites reimportados divergem da IR")
-        if not transforms_ok:
+        if not placement["transforms_ok"]:
             reasons.append("transformações não-identidade")
-        if not units_ok:
+        if not placement["units_ok"]:
             reasons.append("unidades/extensão fora do contrato métrico")
-        detail = f"reimportação rejeitada: {'; '.join(reasons) or 'GLB não conformante'}"
-    return {"ok": ok, "detail": detail,
+        joined = "; ".join(reasons) or "GLB não conformante"
+        detail = f"reimportação rejeitada: {joined}"
+    return {"ok": ok, "detail": detail, "integrity_ok": integrity_ok}
+
+
+def _reimport_gate(path: str, mesh: MeshData) -> dict:
+    """Prove the delivered Asset by reimporting it with Blender (ADR 0006).
+
+    Runs inside the attempt, before any publication. Each concern has
+    its own check above (topology / materials / anchor+transforms+units
+    / integrity); this gate only loads the scene and coordinates them.
+    """
+    import bpy  # type: ignore[import-not-found]
+
+    expected_names = sorted(
+        {mesh.materials[i].name for i in set(mesh.face_materials)}
+    )
+    # Actual tris handed to Blender. (MeshData.tri_count overcounts quads
+    # and stays as-is: budgets and the report contract depend on it.)
+    expected_tris = len(mesh.triangulated())
+    exp_min, exp_max = _expected_reimport_bounds(mesh)
+    expected_extent = max(hi - lo for lo, hi in zip(exp_min, exp_max))
+    anchor_kind = mesh.anchor_kind.value
+
+    smoke = check_glb(path)
+    if not smoke["ok"]:
+        return _reject_reimport(
+            expected_tris, anchor_kind, f"GLB inválido ({smoke['detail']})"
+        )
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    try:
+        result = bpy.ops.import_scene.gltf(filepath=path)
+    except (OSError, RuntimeError) as error:
+        return _reject_reimport(
+            expected_tris, anchor_kind, f"o importador glTF falhou ({error})"
+        )
+    if "FINISHED" not in result:
+        return _reject_reimport(
+            expected_tris, anchor_kind,
+            "o importador glTF não concluiu a reimportação",
+        )
+    bpy.context.view_layer.update()
+    objects = list(bpy.context.scene.objects)
+    roots = [obj for obj in objects if obj.parent is None]
+    meshes = [obj for obj in objects if obj.type == "MESH"]
+    if len(meshes) != 1 or len(roots) != 1:
+        return _reject_reimport(
+            expected_tris, anchor_kind,
+            f"esperado 1 mesh/1 nó raiz, obtido {len(meshes)}/{len(roots)}",
+            mesh_count=len(meshes), root_nodes=len(roots),
+        )
+    obj = meshes[0]
+    data = obj.data
+    units = bpy.context.scene.unit_settings
+    topology = _reimport_topology(data, expected_tris)
+    materials = _reimport_materials(data, expected_names)
+    placement = _reimport_placement(
+        objects, obj, data, mesh, units, exp_min, exp_max, expected_extent
+    )
+    integrity = _reimport_integrity(
+        topology, materials, placement, mesh, expected_names, expected_tris
+    )
+    return {"ok": integrity["ok"], "detail": integrity["detail"],
             "mesh_count": len(meshes), "root_nodes": len(roots),
-            "root_transform_identity": bool(identity),
+            "root_transform_identity": placement["root_transform_identity"],
             "coordinate_system": dict(GLTF_COORDINATE_SYSTEM),
-            "topology_ok": bool(topology_ok), "tri_count": tri_count,
+            "topology_ok": bool(topology["topology_ok"]),
+            "tri_count": topology["tri_count"],
             "tri_count_expected": expected_tris,
-            "materials_ok": bool(materials_ok), "material_names": names,
-            "anchor_ok": bool(anchor_ok), "anchor_kind": mesh.anchor_kind.value,
-            "transforms_ok": bool(transforms_ok),
-            "units_ok": bool(units_ok),
-            "units": {"system": str(units.system), "scale_length": float(units.scale_length)},
-            "integrity_ok": bool(integrity_ok)}
+            "materials_ok": bool(materials["materials_ok"]),
+            "material_names": materials["material_names"],
+            "anchor_ok": bool(placement["anchor_ok"]),
+            "anchor_kind": anchor_kind,
+            "transforms_ok": bool(placement["transforms_ok"]),
+            "units_ok": bool(placement["units_ok"]),
+            "units": placement["units"],
+            "integrity_ok": bool(integrity["integrity_ok"])}
 
 
 def _report(spec: AnySpec, mesh: MeshData, checks: dict, ok: bool, renderer: str,
-            stages: dict[str, float] | None = None, peak: int = 0) -> dict:
+            metrics: AttemptMetrics | None = None) -> dict:
+    measured = metrics if metrics is not None else AttemptMetrics()
     return {
         "schema_version": 1, "status": "success" if ok else "failure", "ok": ok,
-        "stage": "published" if ok else "validation", "backend": renderer, "renderer": renderer,
-        "environment": {"worker": "0.1.0", "blender": _blender_version(), "python": platform.python_version(),
-                        "process_id": os.getpid(),
-                        "render_profile": "medieval_lowpoly-v1"},
+        "stage": "published" if ok else "validation", "backend": renderer,
+        "renderer": renderer,
+        "environment": {
+            "worker": "0.1.0", "blender": _blender_version(),
+            "python": platform.python_version(),
+            "process_id": os.getpid(),
+            "render_profile": "medieval_lowpoly-v1",
+        },
         "resolved_spec": spec_to_dict(spec), "spec": spec_to_dict(spec),
         "tri_count": mesh.tri_count(),
         "verts": len(mesh.vertices),
         "faces": len(mesh.faces),
         "materials": [m.name for m in mesh.materials],
         "checks": checks,
-        "artifacts": ["model.glb", "preview.png", "report.json"] if ok else ["report.json"],
-        "error": None, "metrics": {"stages": dict(stages) if stages else {"total_seconds": 0.0},
-                                   "peak_memory_bytes": peak},
+        "artifacts": ["model.glb", "preview.png", "report.json"]
+        if ok else ["report.json"],
+        "error": None, "metrics": {
+            "stages": dict(measured.stages)
+            if measured.stages else {"total_seconds": 0.0},
+            "peak_memory_bytes": measured.peak_memory_bytes},
     }
 
 
@@ -396,7 +578,8 @@ def _write_report(out_dir: str, report: dict) -> None:
         json.dump(report, f, indent=2, ensure_ascii=False)
 
 
-def generate_in_process_from_spec_file(spec_path: str, out_dir: str, *, force: bool = False) -> dict:
+def generate_in_process_from_spec_file(spec_path: str, out_dir: str, *,
+                                       force: bool = False) -> dict:
     clock = _StageClock()
     try:
         return generate(load_spec_file(spec_path), out_dir, force=force)
@@ -407,30 +590,44 @@ def generate_in_process_from_spec_file(spec_path: str, out_dir: str, *, force: b
         if not occupied:
             try:
                 os.makedirs(out_dir, exist_ok=True)
-                code = FailureCode.INPUT_INVALID if error.__class__.__name__ == "SpecError" else FailureCode(
-                    getattr(error, "code", FailureCode.BUILD_FAILED.value)
-                )
-                stages, peak = clock.snapshot()
-                if isinstance(error, GenerateError) and error.stages:
-                    partial = dict(error.stages)
-                    partial.pop("total_seconds", None)
-                    partial.update(stages)
-                    stages = partial
+                code = _code_for_in_process_error(error)
+                measured = clock.snapshot()
+                if isinstance(error, GenerateError) and error.metrics.stages:
+                    partial = error.metrics.without_total()
+                    partial.update(measured.stages)
+                    measured = AttemptMetrics(
+                        partial, measured.peak_memory_bytes
+                    )
                 report = {"schema_version": 1, "status": "failure", "ok": False,
                           "stage": stage_for_code(code),
                           "backend": "bpy" if bpy_available() else None,
-                          "environment": {"worker": "0.1.0", "blender": _blender_version(),
-                                          "process_id": os.getpid(),
-                                          "python": platform.python_version(), "render_profile": "medieval_lowpoly-v1"},
-                          "resolved_spec": None, "checks": {}, "artifacts": ["report.json"],
+                          "environment": {
+                              "worker": "0.1.0",
+                              "blender": _blender_version(),
+                              "process_id": os.getpid(),
+                              "python": platform.python_version(),
+                              "render_profile": "medieval_lowpoly-v1"},
+                          "resolved_spec": None, "checks": {},
+                          "artifacts": ["report.json"],
                           "error": structured_error(code, str(error)),
-                          "metrics": {"stages": stages, "peak_memory_bytes": peak}}
+                          "metrics": {
+                              "stages": measured.stages,
+                              "peak_memory_bytes":
+                                  measured.peak_memory_bytes}}
                 _write_report(out_dir, report)
             except OSError:
                 pass
         raise
     finally:
         clock.stop()
+
+
+def _code_for_in_process_error(error: Exception) -> FailureCode:
+    if error.__class__.__name__ == "SpecError":
+        return FailureCode.INPUT_INVALID
+    return FailureCode(getattr(
+        error, "code", FailureCode.BUILD_FAILED.value
+    ))
 
 
 def generate_from_spec_file(

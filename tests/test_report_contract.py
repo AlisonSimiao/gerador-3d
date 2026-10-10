@@ -75,8 +75,9 @@ def test_success_report_pins_the_stable_field_set() -> None:
         checks,
         ok=True,
         renderer="bpy",
-        stages={"inspect": 0.01, "build": 0.02, "total_seconds": 0.05},
-        peak=12345,
+        metrics=export.AttemptMetrics(
+            {"inspect": 0.01, "build": 0.02, "total_seconds": 0.05}, 12345
+        ),
     )
 
     assert_report_contract(report)
