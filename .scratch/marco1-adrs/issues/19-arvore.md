@@ -4,7 +4,7 @@
 
 **Blocked by:** 17: Suíte de dois níveis e gate de release
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] Contrato v1 da Árvore com campos, faixas e defaults do ADR 0009; `lean` em graus, não fração
 - [ ] `canopy_form` e `foliage_palette` independentes e ambos exercitados nos exemplos
