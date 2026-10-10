@@ -4,7 +4,7 @@
 
 **Blocked by:** 17: Suíte de dois níveis e gate de release
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] Contrato v1 da Espada com campos, faixas e defaults do ADR 0009; campos antigos rejeitados
 - [ ] Âncora no centro da empunhadura, na origem; validação ancorada confere
