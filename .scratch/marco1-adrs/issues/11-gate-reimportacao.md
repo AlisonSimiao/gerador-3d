@@ -4,9 +4,13 @@
 
 **Blocked by:** 09: Exportação oficial glTF com conversão de coordenadas
 
-**Status:** claimed
+**Status:** resolved
 
-- [ ] Reimportação do GLB roda dentro da Tentativa, antes de qualquer publicação
-- [ ] Gate comprova: topologia por componente, materiais atribuídos, Âncora na origem, transformações, unidades, integridade do Asset
-- [ ] GLB corrompido ou incompleto (teste de falha) → gate rejeita, exit ≠ 0, motivo estruturado no Relatório
-- [ ] Verificações puro-Python continuam presentes como auxiliares, sem substituir o gate
+- [x] Reimportação do GLB roda dentro da Tentativa, antes de qualquer publicação
+- [x] Gate comprova: topologia por componente, materiais atribuídos, Âncora na origem, transformações, unidades, integridade do Asset
+- [x] GLB corrompido ou incompleto (teste de falha) → gate rejeita, exit ≠ 0, motivo estruturado no Relatório
+- [x] Verificações puro-Python continuam presentes como auxiliares, sem substituir o gate
+
+## Answer
+
+`_reimport_gate` (export.py) agora recebe a IR e prova via Blender: topologia (sem faces degeneradas/órfãs, tris de loop == tris entregues), materiais atribuídos (nomes usados, todos os slots com faces), Âncora na origem (por `AnchorKind`, sobre limites mundo), transformações identidade, unidades métricas com extensão correspondente, e integridade da ida-e-volta; 09 intacto. Falha vira `GenerateError(REIMPORT_FAILED)` → `report.json` com `error.code reimport.failed`, `stage reimport`, só `report.json` no destino, exit 1. Calibragem real: importador reconstrói quads (contar loop-tris), descarta materiais IR sem faces, `tri_count()` superconta quads (mantido; gate usa `len(triangulated())`).
