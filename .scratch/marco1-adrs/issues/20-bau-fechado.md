@@ -4,9 +4,19 @@
 
 **Blocked by:** 17: Suíte de dois níveis e gate de release
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Contrato v1 do Baú com campos, faixas e defaults do ADR 0009; campos antigos rejeitados
-- [ ] Envelope externo confere com as dimensões declaradas (tampa e cintas incluídas)
-- [ ] Variação observável por Seed; mesma Seed reproduz o resultado
-- [ ] Matriz de Aceitação e baseline visual versionados; orçamento de 2000 triângulos respeitado
+- [x] Contrato v1 do Baú com campos, faixas e defaults do ADR 0009; campos antigos rejeitados
+- [x] Envelope externo confere com as dimensões declaradas (tampa e cintas incluídas)
+- [x] Variação observável por Seed; mesma Seed reproduz o resultado
+- [x] Matriz de Aceitação e baseline visual versionados; orçamento de 2000 triângulos respeitado
+
+## Answer
+Contrato chest v1 verificado sem mudanças no gerador: envelope externo
+(±w/2, ±d/2, 0..h) confere para tampa arched|flat e cintas/fecho contidos,
+âncora no centro do apoio. Seed varia a largura das cintas de forma
+observável e reproduzível sem contrariar dimensões/opções/materiais.
+Matriz com 6 specs (canonical, 2 opções, 2 limites, 1 seed-variant) e
+baseline.json ready-for-human; previews candidatos via Blender Eevee em
+acceptance/chest/review/ aguardam aprovação humana. Fast 161 verdes,
+integração da matriz verde, mypy limpo.
