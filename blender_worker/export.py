@@ -14,7 +14,7 @@ from typing import Any
 
 from . import generators  # noqa: F401  (registra os 4 geradores)
 from .registry import get_descriptor
-from .geometry.mesh import MeshData
+from .geometry.mesh import AnchorKind, MeshData
 from .schema import AnySpec, load_spec_file, spec_to_dict
 from .validators import check_glb
 from .failures import FailureCode, stage_for_code, structured_error
@@ -115,9 +115,9 @@ def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
             glb_path = os.path.join(stage, "model.glb")
             # Explicit internal→glTF conversion: mesh_to_bpy rotated the IR
             # into Blender space; export_yup=True + metric units emit +Y up / meters.
-            bpy.ops.export_scene.gltf(filepath=glb_path, export_format="GLB", export_yup=True)
+            _export_glb(glb_path)
             clock.lap("export")
-            checks["reimport"] = _reimport_gate(glb_path, len(set(mesh.face_materials)))
+            checks["reimport"] = _reimport_gate(glb_path, mesh)
             clock.lap("reimport")
             if not checks["reimport"]["ok"]: raise GenerateError(checks["reimport"]["detail"], FailureCode.REIMPORT_FAILED)
             from .preview import render_official_preview
@@ -167,28 +167,176 @@ def _identity_4x4(matrix: Any, tolerance: float = 1e-6) -> bool:
     )
 
 
-def _reimport_gate(path: str, material_count: int) -> dict:
+def _export_glb(path: str) -> None:
+    """Official scene→GLB step (Blender glTF exporter, +Y up, meters)."""
     import bpy  # type: ignore[import-not-found]
+
+    bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", export_yup=True)
+
+
+#: Slack (meters) for the IR→glTF→Blender roundtrip: the exporter writes
+#: float32, so coordinates that went through Blender gain ~1e-7 relative
+#: noise. A wrong unit (cm/mm) would shift extents by 10–1000x, far above this.
+REIMPORT_TOLERANCE_M = 1e-3
+#: A zero-area reimported polygon is degenerate when below this (m²); the
+#: smallest real faces the generators emit are ~1e-4 m².
+REIMPORT_MIN_FACE_AREA = 1e-7
+#: Plausible Asset extents in meters (units proof, mirrors check_transform).
+REIMPORT_MIN_EXTENT_M = 0.05
+REIMPORT_MAX_EXTENT_M = 60.0
+
+
+def _expected_reimport_bounds(mesh: MeshData) -> tuple[tuple[float, float, float],
+                                                      tuple[float, float, float]]:
+    """IR bounds mapped into reimported Blender space.
+
+    `mesh_to_bpy` emits (-x, -y, z) and the glTF export/import roundtrip
+    preserves Blender space, so the origin stays fixed while X/Y flip.
+    """
+    (x0, y0, z0), (x1, y1, z1) = mesh.bounds()
+    return ((-x1, -y1, z0), (-x0, -y0, z1))
+
+
+def _anchor_holds(bounds_min: tuple[float, float, float],
+                  bounds_max: tuple[float, float, float],
+                  kind: AnchorKind, tolerance: float = REIMPORT_TOLERANCE_M) -> bool:
+    """Anchor semantics checked against reimported world bounds (meters)."""
+    if kind is AnchorKind.SUPPORT_SURFACE:
+        return (abs(bounds_min[2]) <= tolerance
+                and bounds_min[0] <= tolerance <= bounds_max[0]
+                and bounds_min[1] <= tolerance <= bounds_max[1])
+    if kind is AnchorKind.GRIP_CENTER:
+        return all(lo - tolerance <= 0.0 <= hi + tolerance
+                   for lo, hi in zip(bounds_min, bounds_max))
+    return False
+
+
+def _reimport_gate(path: str, mesh: MeshData) -> dict:
+    """Prove the delivered Asset by reimporting it with Blender (ADR 0006).
+
+    Runs inside the attempt, before any publication: topology (no degenerate
+    faces, no orphan verts, tri count preserved), assigned materials (every
+    expected material present and used by ≥1 face), Anchor at the origin,
+    identity transforms, metric units with matching extents, and overall
+    integrity of the roundtrip.
+    """
+    import bpy  # type: ignore[import-not-found]
+
+    expected_names = sorted({mesh.materials[i].name for i in set(mesh.face_materials)})
+    # Actual tris handed to Blender. (MeshData.tri_count overcounts quads and
+    # stays as-is: budgets and the report contract depend on it.)
+    expected_tris = len(mesh.triangulated())
+    exp_min, exp_max = _expected_reimport_bounds(mesh)
+    expected_extent = max(hi - lo for lo, hi in zip(exp_min, exp_max))
+
+    def _reject(detail: str, **fields: Any) -> dict:
+        result = {"ok": False, "detail": f"reimportação rejeitada: {detail}",
+                  "mesh_count": 0, "root_nodes": 0,
+                  "root_transform_identity": False,
+                  "coordinate_system": dict(GLTF_COORDINATE_SYSTEM),
+                  "topology_ok": False, "tri_count": 0,
+                  "tri_count_expected": expected_tris,
+                  "materials_ok": False, "material_names": [],
+                  "anchor_ok": False, "anchor_kind": mesh.anchor_kind.value,
+                  "transforms_ok": False,
+                  "units_ok": False, "units": {"system": None, "scale_length": None},
+                  "integrity_ok": False}
+        result.update(fields)
+        return result
+
     smoke = check_glb(path)
     if not smoke["ok"]:
-        return {**smoke, "mesh_count": 0, "root_nodes": 0,
-                "root_transform_identity": False,
-                "coordinate_system": dict(GLTF_COORDINATE_SYSTEM)}
+        return _reject(f"GLB inválido ({smoke['detail']})")
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    result = bpy.ops.import_scene.gltf(filepath=path)
+    try:
+        result = bpy.ops.import_scene.gltf(filepath=path)
+    except (OSError, RuntimeError) as error:
+        return _reject(f"o importador glTF falhou ({error})")
+    if "FINISHED" not in result:
+        return _reject("o importador glTF não concluiu a reimportação")
     bpy.context.view_layer.update()
     objects = list(bpy.context.scene.objects)
     roots = [obj for obj in objects if obj.parent is None]
     meshes = [obj for obj in objects if obj.type == "MESH"]
-    materials_ok = len(meshes) == 1 and len(meshes[0].data.materials) == material_count
-    identity = len(meshes) == 1 and _identity_4x4(meshes[0].matrix_world)
-    ok = "FINISHED" in result and len(meshes) == 1 and len(roots) == 1 and materials_ok and identity
-    return {"ok": ok,
-            "detail": f"{len(meshes)} mesh, 1 nó raiz, materiais preservados" if ok
-                      else "GLB reimportado não conformante",
+    if len(meshes) != 1 or len(roots) != 1:
+        return _reject(f"esperado 1 mesh/1 nó raiz, obtido {len(meshes)}/{len(roots)}",
+                       mesh_count=len(meshes), root_nodes=len(roots))
+    obj = meshes[0]
+    data = obj.data
+    identity = _identity_4x4(obj.matrix_world)
+    transforms_ok = bool(identity) and all(_identity_4x4(o.matrix_world) for o in objects)
+
+    polygons = list(data.polygons)
+    degenerate = [p.index for p in polygons
+                  if len(p.loop_indices) < 3 or p.area < REIMPORT_MIN_FACE_AREA]
+    used: set[int] = set()
+    for poly in polygons:
+        used.update(poly.vertices)
+    orphan = len(used) != len(data.vertices)
+    # The glTF importer rebuilds quads from triangle pairs, so polygon count
+    # is not the tri count: count loop triangles (what the exporter wrote).
+    data.calc_loop_triangles()
+    tri_count = len(data.loop_triangles)
+    topology_ok = not degenerate and not orphan and tri_count == expected_tris
+
+    names = [m.name if m is not None else "" for m in data.materials]
+    slots_used = {p.material_index for p in polygons}
+    materials_ok = (set(names) == set(expected_names) and len(names) == len(expected_names)
+                    and all(p.material_index < len(names) for p in polygons)
+                    and set(range(len(names))) <= slots_used)
+
+    world = [obj.matrix_world @ v.co for v in data.vertices]
+    wmin = (min(c.x for c in world), min(c.y for c in world), min(c.z for c in world))
+    wmax = (max(c.x for c in world), max(c.y for c in world), max(c.z for c in world))
+    anchor_ok = _anchor_holds(wmin, wmax, mesh.anchor_kind)
+    bounds_ok = all(abs(a - b) <= REIMPORT_TOLERANCE_M
+                    for a, b in zip(wmin + wmax, exp_min + exp_max))
+
+    units = bpy.context.scene.unit_settings
+    extent = max(hi - lo for lo, hi in zip(wmin, wmax))
+    units_ok = (units.system == "METRIC" and units.scale_length == 1.0
+                and REIMPORT_MIN_EXTENT_M <= extent <= REIMPORT_MAX_EXTENT_M
+                and abs(extent - expected_extent)
+                <= REIMPORT_TOLERANCE_M + 1e-3 * expected_extent)
+
+    integrity_ok = bool(topology_ok and materials_ok and anchor_ok and bounds_ok
+                        and transforms_ok and units_ok)
+    ok = bool(identity and materials_ok and integrity_ok)
+    if ok:
+        detail = (f"{len(meshes)} mesh, 1 nó raiz, materiais preservados, "
+                  "topologia/âncora/unidades íntegras")
+    else:
+        reasons = []
+        if not topology_ok:
+            if degenerate:
+                reasons.append(f"{len(degenerate)} face(s) degenerada(s)")
+            if orphan:
+                reasons.append("vértices órfãos")
+            if tri_count != expected_tris:
+                reasons.append(f"{tri_count} tris reimportados ≠ {expected_tris} esperados")
+        if not materials_ok:
+            reasons.append(f"materiais {names} ≠ {expected_names} ou slots sem faces")
+        if not anchor_ok:
+            reasons.append(f"Âncora {mesh.anchor_kind.value} fora da origem")
+        if not bounds_ok:
+            reasons.append("limites reimportados divergem da IR")
+        if not transforms_ok:
+            reasons.append("transformações não-identidade")
+        if not units_ok:
+            reasons.append("unidades/extensão fora do contrato métrico")
+        detail = f"reimportação rejeitada: {'; '.join(reasons) or 'GLB não conformante'}"
+    return {"ok": ok, "detail": detail,
             "mesh_count": len(meshes), "root_nodes": len(roots),
-            "root_transform_identity": identity,
-            "coordinate_system": dict(GLTF_COORDINATE_SYSTEM)}
+            "root_transform_identity": bool(identity),
+            "coordinate_system": dict(GLTF_COORDINATE_SYSTEM),
+            "topology_ok": bool(topology_ok), "tri_count": tri_count,
+            "tri_count_expected": expected_tris,
+            "materials_ok": bool(materials_ok), "material_names": names,
+            "anchor_ok": bool(anchor_ok), "anchor_kind": mesh.anchor_kind.value,
+            "transforms_ok": bool(transforms_ok),
+            "units_ok": bool(units_ok),
+            "units": {"system": str(units.system), "scale_length": float(units.scale_length)},
+            "integrity_ok": bool(integrity_ok)}
 
 
 def _report(spec: AnySpec, mesh: MeshData, checks: dict, ok: bool, renderer: str,
