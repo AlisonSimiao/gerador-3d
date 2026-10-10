@@ -1,10 +1,4 @@
-"""Export: GLB + preview.png + report.json — PLANO_MVP §7.
-
-Pipeline puro-Python (determinístico, testável sem Blender). Quando `bpy`
-está disponível, os objetos Blender são construídos via `bpy_build`
-antes do export para fidelidade de cena; o GLB/preview seguem o mesmo
-contrato de artefatos.
-"""
+"""Official Blender export plus the temporary preview/report orchestration."""
 
 from __future__ import annotations
 
@@ -19,6 +13,7 @@ import tempfile
 import time
 import tracemalloc
 import zlib
+from typing import Any
 
 from . import generators  # noqa: F401  (registra os 4 geradores)
 from .registry import get_descriptor
@@ -74,101 +69,6 @@ class _StageClock:
         if self._owns_tracing:
             tracemalloc.stop()
             self._owns_tracing = False
-
-
-# ---------------------------------------------------------------- GLB
-
-def _write_glb(mesh: MeshData, path: str) -> None:
-    tris = mesh.triangulated()
-    positions: list[float] = []
-    for v in mesh.vertices:
-        positions.extend([float(v[0]), float(v[1]), float(v[2])])
-    pos_bytes = struct.pack(f"<{len(positions)}f", *positions)
-
-    # Um primitive por grupo de material (glTF: 1 material por primitive).
-    order: list[int] = []
-    groups: dict[int, list[tuple[int, int, int]]] = {}
-    for tri, mat in tris:
-        if mat not in groups:
-            groups[mat] = []
-            order.append(mat)
-        groups[mat].append(tri)
-
-    use32 = len(mesh.vertices) > 65535
-    idx_fmt = "I" if use32 else "H"
-    idx_ctype = 5125 if use32 else 5123
-
-    bin_blob = bytearray(pos_bytes)
-    while len(bin_blob) % 4:
-        bin_blob.append(0)
-    buffer_views: list[dict] = [
-        {"buffer": 0, "byteOffset": 0, "byteLength": len(pos_bytes), "target": 34962}
-    ]
-    accessors: list[dict] = [
-        {"bufferView": 0, "componentType": 5126, "count": len(mesh.vertices),
-         "type": "VEC3", "min": list(map(float, _min_v(mesh))),
-         "max": list(map(float, _max_v(mesh)))}
-    ]
-    primitives: list[dict] = []
-    for mat in order:
-        idx: list[int] = []
-        for t in groups[mat]:
-            idx.extend(t)
-        raw = struct.pack(f"<{len(idx)}{idx_fmt}", *idx)
-        off = len(bin_blob)
-        bin_blob.extend(raw)
-        while len(bin_blob) % 4:
-            bin_blob.append(0)
-        buffer_views.append(
-            {"buffer": 0, "byteOffset": off, "byteLength": len(raw), "target": 34963}
-        )
-        acc_idx = len(accessors)
-        accessors.append({"bufferView": len(buffer_views) - 1, "componentType": idx_ctype,
-                          "count": len(idx), "type": "SCALAR"})
-        primitives.append({"attributes": {"POSITION": 0}, "indices": acc_idx,
-                           "material": order.index(mat), "mode": 4})
-
-    materials = []
-    for m in mesh.materials:
-        materials.append({
-            "name": m.name,
-            "pbrMetallicRoughness": {
-                "baseColorFactor": list(m.color),
-                "metallicFactor": m.metallic,
-                "roughnessFactor": m.roughness,
-            },
-        })
-    doc = {
-        "asset": {"version": "2.0", "generator": "gerador-3d-marco1"},
-        "scene": 0,
-        "scenes": [{"nodes": [0]}],
-        "nodes": [{"mesh": 0, "name": "asset"}],
-        "meshes": [{"name": "asset", "primitives": primitives}],
-        "materials": materials,
-        "accessors": accessors,
-        "bufferViews": buffer_views,
-        "buffers": [{"byteLength": len(bin_blob)}],
-    }
-    json_bytes = json.dumps(doc, separators=(",", ":")).encode("utf-8")
-    while len(json_bytes) % 4:
-        json_bytes += b" "
-    total = 12 + 8 + len(json_bytes) + 8 + len(bin_blob)
-    with open(path, "wb") as f:
-        f.write(b"glTF" + struct.pack("<II", 2, total))
-        f.write(struct.pack("<II", len(json_bytes), 0x4E4F534A))
-        f.write(json_bytes)
-        f.write(struct.pack("<II", len(bin_blob), 0x004E4942))
-        f.write(bin_blob)
-
-
-def _min_v(mesh: MeshData) -> tuple[float, float, float]:
-    b, _ = mesh.bounds()
-    return b
-
-
-def _max_v(mesh: MeshData) -> tuple[float, float, float]:
-    _, t = mesh.bounds()
-    return t
 
 
 # ---------------------------------------------------------------- Preview (PNG puro-stdlib, 512px)
@@ -312,6 +212,8 @@ def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
             bpy.ops.wm.read_factory_settings(use_empty=True); mesh_to_bpy(mesh, spec.type)
             clock.lap("build")
             glb_path = os.path.join(stage, "model.glb")
+            # Explicit internal→glTF conversion: mesh_to_bpy rotated the IR
+            # into Blender space; export_yup=True + metric units emit +Y up / meters.
             bpy.ops.export_scene.gltf(filepath=glb_path, export_format="GLB", export_yup=True)
             clock.lap("export")
             checks["reimport"] = _reimport_gate(glb_path, len(set(mesh.face_materials)))
@@ -348,15 +250,43 @@ def _renderer() -> str:
     return "bpy" if bpy_available() else "fallback"
 
 
+# glTF coordinate contract (ADR 0007): right-handed, +Y up, +Z front,
+# meters, Anchor at the origin. `mesh_to_bpy` already rotated the IR into
+# Blender space; `export_yup=True` + metric units finish the conversion.
+GLTF_COORDINATE_SYSTEM = {"handedness": "right", "up": "+Y", "front": "+Z", "unit": "meter"}
+
+
+def _identity_4x4(matrix: Any, tolerance: float = 1e-6) -> bool:
+    rows = [list(row) for row in matrix]
+    return all(
+        abs(value - (1.0 if row == col else 0.0)) < tolerance
+        for row, line in enumerate(rows)
+        for col, value in enumerate(line)
+    )
+
+
 def _reimport_gate(path: str, material_count: int) -> dict:
     import bpy  # type: ignore[import-not-found]
     smoke = check_glb(path)
-    if not smoke["ok"]: return smoke
+    if not smoke["ok"]:
+        return {**smoke, "mesh_count": 0, "root_nodes": 0,
+                "root_transform_identity": False,
+                "coordinate_system": dict(GLTF_COORDINATE_SYSTEM)}
     bpy.ops.wm.read_factory_settings(use_empty=True)
     result = bpy.ops.import_scene.gltf(filepath=path)
-    meshes = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
-    ok = "FINISHED" in result and len(meshes) == 1 and len(meshes[0].data.materials) == material_count
-    return {"ok": ok, "detail": f"{len(meshes)} mesh, materiais preservados" if ok else "GLB reimportado não conformante"}
+    bpy.context.view_layer.update()
+    objects = list(bpy.context.scene.objects)
+    roots = [obj for obj in objects if obj.parent is None]
+    meshes = [obj for obj in objects if obj.type == "MESH"]
+    materials_ok = len(meshes) == 1 and len(meshes[0].data.materials) == material_count
+    identity = len(meshes) == 1 and _identity_4x4(meshes[0].matrix_world)
+    ok = "FINISHED" in result and len(meshes) == 1 and len(roots) == 1 and materials_ok and identity
+    return {"ok": ok,
+            "detail": f"{len(meshes)} mesh, 1 nó raiz, materiais preservados" if ok
+                      else "GLB reimportado não conformante",
+            "mesh_count": len(meshes), "root_nodes": len(roots),
+            "root_transform_identity": identity,
+            "coordinate_system": dict(GLTF_COORDINATE_SYSTEM)}
 
 
 def _report(spec: AnySpec, mesh: MeshData, checks: dict, ok: bool, renderer: str,

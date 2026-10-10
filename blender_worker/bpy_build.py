@@ -14,13 +14,20 @@ from .geometry.mesh import MeshData
 def mesh_to_bpy(mesh: MeshData, name: str) -> Any:
     import bpy  # type: ignore[import-not-found]
 
+    # Internal IR is right-handed with Z up and +Y front. Blender's glTF
+    # exporter maps Blender -Y to glTF +Z when export_yup=True. Rotating the
+    # IR 180° around Z therefore gives the public right-handed contract:
+    # (-IR.x, IR.z, IR.y), with glTF +Y up and +Z front.
+    blender_vertices = [(-x, -y, z) for x, y, z in mesh.vertices]
     tris = mesh.triangulated()
     faces = [t for t, _ in tris]
     me = bpy.data.meshes.new(f"{name}_mesh")
-    me.from_pydata([tuple(v) for v in mesh.vertices], [], [tuple(f) for f in faces])
+    me.from_pydata(blender_vertices, [], [tuple(f) for f in faces])
     me.update()
     obj = bpy.data.objects.new(name, me)
     scene = bpy.context.scene
+    scene.unit_settings.system = "METRIC"
+    scene.unit_settings.scale_length = 1.0
     scene.collection.objects.link(obj)
 
     mats = []
