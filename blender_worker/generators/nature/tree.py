@@ -13,10 +13,6 @@ from ..base import BaseGenerator, register
 
 @register("tree")
 class TreeGenerator(BaseGenerator[TreeSpec]):
-    @classmethod
-    def tri_budget(cls) -> int:
-        return 5000
-
     def build(self) -> MeshData:
         s = self.spec
         rng = random.Random(s.seed)

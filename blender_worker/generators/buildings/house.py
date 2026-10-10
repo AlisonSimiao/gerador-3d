@@ -14,10 +14,6 @@ from ..base import BaseGenerator, register
 class HouseGenerator(BaseGenerator[HouseSpec]):
     """Casa low-poly: corpo + telhado + chaminé + janelas + porta."""
 
-    @classmethod
-    def tri_budget(cls) -> int:
-        return 8000
-
     def build(self) -> MeshData:
         s = self.spec
         st = self.style
@@ -33,10 +29,10 @@ class HouseGenerator(BaseGenerator[HouseSpec]):
         # Corpo
         start = len(b.mesh.faces); b.box(0, 0, 0, s.width, s.depth, wall_h, wall); b.mesh.mark_component("body", start)
         # Telhado
-        roof_h = min(s.width, s.depth) * 0.35
+        roof_h = min(s.width, s.depth) * (0.33 + rng.uniform(-0.02, 0.02))
         start = len(b.mesh.faces)
         if s.roof_form == "gable":
-            b.gable_roof(0, 0, wall_h, s.width, s.depth, roof_h, 0.3, roof)
+            b.gable_roof(0, 0, wall_h, s.width, s.depth, roof_h, 0.25 + rng.uniform(0, 0.1), roof)
         elif s.roof_form == "hip":
             b.tapered_box(0, 0, wall_h, s.width + 0.6, s.depth + 0.6,
                           s.width * 0.25, s.depth * 0.25, roof_h, roof)

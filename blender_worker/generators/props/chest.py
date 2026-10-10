@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import random
 
 from ...geometry import MeshBuilder
 from ...geometry.mesh import MeshData
@@ -13,12 +14,9 @@ from ..base import BaseGenerator, register
 
 @register("chest")
 class ChestGenerator(BaseGenerator[ChestSpec]):
-    @classmethod
-    def tri_budget(cls) -> int:
-        return 2000
-
     def build(self) -> MeshData:
         s = self.spec
+        rng = random.Random(s.seed)
         b = MeshBuilder()
         wood = b.material("wood", self.style.wood(), roughness=0.85)
         wood_dark = b.material("wood_dark", self.style.wood("dark"), roughness=0.85)
@@ -39,7 +37,7 @@ class ChestGenerator(BaseGenerator[ChestSpec]):
         start = len(b.mesh.faces)
         for i in range(s.band_count):
             t = (i + 1) / (s.band_count + 1) - 0.5 if s.band_count else 0.0
-            b.box(t * s.width * 0.8, 0, 0, 0.07, s.depth, s.height, iron)
+            b.box(t * s.width * 0.8, 0, 0, 0.06 + rng.uniform(0, .02), s.depth, s.height, iron)
         b.mesh.mark_component("bands", start)
         # Fechadura
         start = len(b.mesh.faces)

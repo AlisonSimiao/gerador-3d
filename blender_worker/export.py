@@ -21,7 +21,7 @@ import tracemalloc
 import zlib
 
 from . import generators  # noqa: F401  (registra os 4 geradores)
-from .generators.base import get_generator
+from .registry import get_descriptor
 from .geometry.mesh import MeshData
 from .schema import AnySpec, load_spec_file, spec_to_dict
 from .style import get_style
@@ -240,7 +240,10 @@ def bpy_available() -> bool:
 def inspect(spec: AnySpec) -> tuple[MeshData, dict]:
     """Build and validate the IR without publishing an official result."""
     style = get_style(spec.style)
-    gen_cls = get_generator(spec.type)
+    descriptor = get_descriptor(spec.type)
+    if spec.style not in descriptor.compatible_styles:
+        raise GenerateError("Estilo incompatível com o Tipo de Asset", FailureCode.INPUT_INVALID)
+    gen_cls = descriptor.generator
     mesh = gen_cls(spec, style).build()
     checks = validate_before_export(mesh, spec.type)
     return mesh, checks

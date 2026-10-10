@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+
 from ...geometry import MeshBuilder
 from ...geometry.mesh import MeshData
 from ...materials import metal_material
@@ -11,12 +13,9 @@ from ..base import BaseGenerator, register
 
 @register("sword")
 class SwordGenerator(BaseGenerator[SwordSpec]):
-    @classmethod
-    def tri_budget(cls) -> int:
-        return 2000
-
     def build(self) -> MeshData:
         s = self.spec
+        rng = random.Random(s.seed)
         b = MeshBuilder()
         steel = b.mesh.add_material(metal_material(self.style, "steel", "blade_steel"))
         iron = b.mesh.add_material(metal_material(self.style, "iron", "guard_iron"))
@@ -47,8 +46,8 @@ class SwordGenerator(BaseGenerator[SwordSpec]):
             z += 0.03
         b.mesh.mark_component("guard", start)
         # Lâmina (afunila até a ponta)
-        start = len(b.mesh.faces); bw = s.blade_width
-        b.tapered_box(0, 0, z, bw, bw * 0.35, bw * 0.15, bw * 0.1,
+        start = len(b.mesh.faces); bw = s.blade_width; thickness = 0.32 + rng.uniform(-0.04, 0.04)
+        b.tapered_box(0, 0, z, bw, bw * thickness, bw * 0.15, bw * thickness * .3,
                       s.blade_length * 0.9, steel)
         b.pyramid_tip(0, 0, z + s.blade_length * 0.9, bw * 0.15, bw * 0.1,
                       s.blade_length * 0.1, steel)

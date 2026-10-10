@@ -11,22 +11,17 @@ from ..style import Style
 
 S = TypeVar("S", bound=BaseSpec)
 
-_GENERATORS: dict[str, type["BaseGenerator[Any]"]] = {}
-
-
 def register(spec_type: str):  # type: ignore[no-untyped-def]
+    """Compatibility decorator; the contractual registry owns discovery."""
     def deco(cls: type["BaseGenerator[Any]"]) -> type["BaseGenerator[Any]"]:
-        _GENERATORS[spec_type] = cls
         return cls
 
     return deco
 
 
 def get_generator(spec_type: str) -> type["BaseGenerator[Any]"]:
-    try:
-        return _GENERATORS[spec_type]
-    except KeyError:
-        raise KeyError(f"gerador {spec_type!r} não registrado") from None
+    from ..registry import get_descriptor
+    return get_descriptor(spec_type).generator
 
 
 class BaseGenerator(ABC, Generic[S]):
@@ -40,11 +35,6 @@ class BaseGenerator(ABC, Generic[S]):
     @abstractmethod
     def build(self) -> MeshData:
         """Constrói a malha (origem na base-centro, metros, rotação zerada)."""
-
-    @classmethod
-    @abstractmethod
-    def tri_budget(cls) -> int:
-        ...
 
     def build_bpy_objects(self, mesh: MeshData) -> list[Any]:
         """Converte MeshData em objetos bpy quando bpy está disponível.

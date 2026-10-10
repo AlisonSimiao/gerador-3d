@@ -26,7 +26,6 @@ class BaseSpec:
     def _common(self) -> None:
         if self.spec_version != self.SPEC_VERSION:
             raise SpecError(f"spec_version={self.spec_version!r} não suportada; esperado 1")
-        _range("seed", self.seed, 0, 4_294_967_295)
         if self.style != "medieval_lowpoly":
             raise SpecError("style incompatível; esperado 'medieval_lowpoly'")
 
@@ -47,8 +46,6 @@ class HouseSpec(BaseSpec):
 
     def __post_init__(self) -> None:
         self._common()
-        _range("width", self.width, 3, 12); _range("depth", self.depth, 3, 10)
-        _range("floors", self.floors, 1, 3); _range("window_count", self.window_count, 0, 16)
         if self.window_count > int((self.width + self.depth) * 1.6):
             raise SpecError("window_count não cabe nas fachadas declaradas")
 
@@ -66,8 +63,7 @@ class SwordSpec(BaseSpec):
     style: Literal["medieval_lowpoly"] = "medieval_lowpoly"
 
     def __post_init__(self) -> None:
-        self._common(); _range("blade_length", self.blade_length, 0.6, 1.1)
-        _range("blade_width", self.blade_width, 0.04, 0.10); _range("grip_length", self.grip_length, 0.10, 0.18)
+        self._common()
 
 
 @dataclass(frozen=True)
@@ -83,8 +79,7 @@ class TreeSpec(BaseSpec):
     style: Literal["medieval_lowpoly"] = "medieval_lowpoly"
 
     def __post_init__(self) -> None:
-        self._common(); _range("trunk_height", self.trunk_height, 1.5, 8)
-        _range("trunk_radius", self.trunk_radius, 0.12, 0.60); _range("lean_degrees", self.lean_degrees, 0, 20)
+        self._common()
 
 
 @dataclass(frozen=True)
@@ -101,14 +96,10 @@ class ChestSpec(BaseSpec):
     style: Literal["medieval_lowpoly"] = "medieval_lowpoly"
 
     def __post_init__(self) -> None:
-        self._common(); _range("width", self.width, 0.6, 1.8); _range("height", self.height, 0.4, 1.1)
-        _range("depth", self.depth, 0.4, 1.0); _range("band_count", self.band_count, 0, 4)
+        self._common()
 
 
 AnySpec = Union[HouseSpec, SwordSpec, TreeSpec, ChestSpec]
-SPEC_CLASSES: dict[str, type[Any]] = {"house": HouseSpec, "sword": SwordSpec, "tree": TreeSpec, "chest": ChestSpec}
-
-
 def _matches(value: Any, annotation: Any) -> bool:
     origin = get_origin(annotation)
     if origin is Literal:
@@ -123,8 +114,11 @@ def _matches(value: Any, annotation: Any) -> bool:
 def load_spec(data: dict[str, Any]) -> AnySpec:
     if not isinstance(data, dict): raise SpecError("spec deve ser um objeto JSON")
     spec_type = data.get("type")
-    cls = SPEC_CLASSES.get(spec_type) if type(spec_type) is str else None
-    if cls is None: raise SpecError(f"type={spec_type!r} desconhecido; esperado um de {sorted(SPEC_CLASSES)}")
+    from .registry import descriptors
+    registry = descriptors()
+    descriptor = registry.get(spec_type) if type(spec_type) is str else None
+    if descriptor is None: raise SpecError(f"type={spec_type!r} desconhecido; esperado um de {sorted(registry)}")
+    cls = descriptor.spec_class
     known = {field.name for field in fields(cls)}
     unknown = set(data) - known
     if unknown: raise SpecError(f"campos desconhecidos para {cls.__name__}: {sorted(unknown)}")
@@ -134,6 +128,8 @@ def load_spec(data: dict[str, Any]) -> AnySpec:
     for name, value in data.items():
         if not _matches(value, hints[name]): raise SpecError(f"{name} possui tipo JSON inválido")
         if type(value) is float and not math.isfinite(value): raise SpecError(f"{name} deve ser finito")
+        if name in descriptor.numeric_bounds:
+            _range(name, value, *descriptor.numeric_bounds[name])
     return cls(**data)  # type: ignore[return-value]
 
 
@@ -147,12 +143,17 @@ def spec_to_dict(spec: AnySpec) -> dict[str, Any]:
 
 
 def json_schema_for(spec_type: str) -> dict[str, Any]:
-    cls = SPEC_CLASSES[spec_type]; hints = get_type_hints(cls); properties: dict[str, Any] = {}; required = []
+    from .registry import get_descriptor
+    descriptor = get_descriptor(spec_type); cls = descriptor.spec_class
+    hints = get_type_hints(cls); properties: dict[str, Any] = {}; required = []
     for field in fields(cls):
         annotation = hints[field.name]; values = get_args(annotation)
-        prop = ({"enum": list(values), "type": _json_type(type(values[0]))} if get_origin(annotation) is Literal
-                else {"type": _json_type(annotation)})
+        prop: dict[str, Any] = ({"enum": list(values), "type": _json_type(type(values[0]))}
+                                if get_origin(annotation) is Literal
+                                else {"type": _json_type(annotation)})
         properties[field.name] = prop
+        if field.name in descriptor.numeric_bounds:
+            prop["minimum"], prop["maximum"] = descriptor.numeric_bounds[field.name]
         if field.default is MISSING: required.append(field.name)
         else: prop["default"] = field.default
     return {"$schema": "https://json-schema.org/draft/2020-12/schema", "title": cls.__name__, "type": "object",
