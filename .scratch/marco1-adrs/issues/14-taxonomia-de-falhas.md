@@ -4,7 +4,7 @@
 
 **Blocked by:** 13: Relatório de Validação versionado
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] Taxonomia versionada no repositório, com um código estável por classe de falha da pipeline
 - [ ] Toda falha da Tentativa mapeia para exatamente um código; CLI e Relatório reportam o mesmo código
