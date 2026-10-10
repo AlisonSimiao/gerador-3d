@@ -1,4 +1,4 @@
-"""Gerador `sword` (armas — Marco 1). Eixo Z para cima, origem na base do pomo."""
+"""Gerador `sword` (armas — Marco 1). Eixo Z para cima, origem no centro da empunhadura."""
 
 from __future__ import annotations
 

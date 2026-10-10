@@ -4,9 +4,20 @@
 
 **Blocked by:** 17: Suíte de dois níveis e gate de release
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Contrato v1 da Espada com campos, faixas e defaults do ADR 0009; campos antigos rejeitados
-- [ ] Âncora no centro da empunhadura, na origem; validação ancorada confere
-- [ ] Variação observável por Seed dentro das intenções da Spec; mesma Seed reproduz o resultado
-- [ ] Matriz de Aceitação e baseline visual versionados; orçamento de 2000 triângulos respeitado
+- [x] Contrato v1 da Espada com campos, faixas e defaults do ADR 0009; campos antigos rejeitados
+- [x] Âncora no centro da empunhadura, na origem; validação ancorada confere
+- [x] Variação observável por Seed dentro das intenções da Spec; mesma Seed reproduz o resultado
+- [x] Matriz de Aceitação e baseline visual versionados; orçamento de 2000 triângulos respeitado
+
+## Answer
+Espada v1 fechada no padrão da Casa: contrato ADR 0009 travado por testes
+(`tests/test_sword.py`, 21 testes — faixas/defaults exatos, campos antigos
+rejeitados), âncora `grip_center` na origem verificada para todas as opções
+de guarda/pomo (docstring corrigida), Seed com variação observável e
+reprodução idêntica. Matriz `acceptance/sword/` com 8 specs (canonical,
+3 opções, risco none×none, limites min/max, seed-variant), `baseline.json`
+todo `ready-for-human` com aprovador nulo, e `review/` com 8 `preview.png`
+1024px gerados pela via oficial Blender. Orçamento folgado: pico de 164 tris
+contra 2000. Fast 151 green, integração da matriz green (~7 min), mypy limpo.
