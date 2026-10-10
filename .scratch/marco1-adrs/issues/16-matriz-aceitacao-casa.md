@@ -4,7 +4,7 @@
 
 **Blocked by:** 07: Casa — variação observável por Seed, 12: Publicação atômica do Resultado de Geração, 13: Relatório de Validação versionado
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] Matriz de Specs da Casa versionada, cobrindo canônico, opções, limites, Seeds e combinações de risco
 - [ ] Previews aprovados versionados com metadados de baseline (aprovador, data, versões de Spec/worker/Blender/perfil)
