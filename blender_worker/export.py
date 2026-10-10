@@ -104,33 +104,58 @@ def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
         if failed:
             shutil.rmtree(stage)
             stages, peak = clock.snapshot()
-            raise GenerateError(f"validação falhou: {list(failed)}",
+            raise GenerateError(f"validação falhou: {list(failed)}", FailureCode.VALIDATION_FAILED,
                                 stages={k: v for k, v in stages.items() if k != "total_seconds"},
                                 peak=peak)
         try:
             import bpy  # type: ignore[import-not-found]
             from .bpy_build import mesh_to_bpy
-            bpy.ops.wm.read_factory_settings(use_empty=True); mesh_to_bpy(mesh, spec.type)
+            try:
+                bpy.ops.wm.read_factory_settings(use_empty=True); mesh_to_bpy(mesh, spec.type)
+            except GenerateError:
+                raise
+            except Exception as error:
+                raise GenerateError(str(error), FailureCode.BUILD_FAILED) from error
             clock.lap("build")
             glb_path = os.path.join(stage, "model.glb")
             # Explicit internal→glTF conversion: mesh_to_bpy rotated the IR
             # into Blender space; export_yup=True + metric units emit +Y up / meters.
-            _export_glb(glb_path)
+            try:
+                _export_glb(glb_path)
+            except GenerateError:
+                raise
+            except Exception as error:
+                raise GenerateError(str(error), FailureCode.EXPORT_FAILED) from error
             clock.lap("export")
-            checks["reimport"] = _reimport_gate(glb_path, mesh)
+            try:
+                checks["reimport"] = _reimport_gate(glb_path, mesh)
+            except GenerateError:
+                raise
+            except Exception as error:
+                raise GenerateError(str(error), FailureCode.REIMPORT_FAILED) from error
             clock.lap("reimport")
             if not checks["reimport"]["ok"]: raise GenerateError(checks["reimport"]["detail"], FailureCode.REIMPORT_FAILED)
             from .preview import render_official_preview
-            checks["preview"] = render_official_preview(os.path.join(stage, "preview.png"))
+            try:
+                checks["preview"] = render_official_preview(os.path.join(stage, "preview.png"))
+            except GenerateError:
+                raise
+            except Exception as error:
+                raise GenerateError(str(error), FailureCode.RENDER_FAILED) from error
             clock.lap("render")
             stages, peak = clock.snapshot()
             report = _report(spec, mesh, checks, ok=True, renderer="bpy", stages=stages, peak=peak)
             _write_report(stage, report)
-            backup = destination + ".previous"
-            if os.path.exists(backup): shutil.rmtree(backup)
-            if os.path.exists(destination): os.replace(destination, backup)
-            os.replace(stage, destination)
-            if os.path.exists(backup): shutil.rmtree(backup)
+            try:
+                backup = destination + ".previous"
+                if os.path.exists(backup): shutil.rmtree(backup)
+                if os.path.exists(destination): os.replace(destination, backup)
+                os.replace(stage, destination)
+                if os.path.exists(backup): shutil.rmtree(backup)
+            except GenerateError:
+                raise
+            except Exception as error:
+                raise GenerateError(str(error), FailureCode.PUBLICATION_FAILED) from error
             return report
         except Exception as error:
             shutil.rmtree(stage, ignore_errors=True)
