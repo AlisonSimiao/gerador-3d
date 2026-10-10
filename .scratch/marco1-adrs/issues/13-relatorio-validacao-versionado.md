@@ -4,7 +4,7 @@
 
 **Blocked by:** 08: Processo Blender limpo por Tentativa de Geração
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] `schema_version` presente; campos estáveis documentados e cobertos por teste de contrato
 - [ ] Relatório registra: status, etapa, backend real, versões (worker, Blender, Python, perfil de render), Spec Resolvida, verificações, artefatos, erro estruturado
