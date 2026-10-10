@@ -4,7 +4,7 @@
 
 **Blocked by:** 12: Publicação atômica do Resultado de Geração, 13: Relatório de Validação versionado
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] Nível rápido sem `bpy` distinto e executável em CI sem Blender; cobre contrato de Spec, IR e validadores
 - [ ] Nível de integração no ambiente oficial (Python 3.13 + `bpy` 5.2.2) cobre construção, renderização, exportação e reimportação
