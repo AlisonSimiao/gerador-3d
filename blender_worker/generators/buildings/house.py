@@ -61,11 +61,15 @@ class HouseGenerator(BaseGenerator[HouseSpec]):
                     b.box(s.width / 2, t * (s.depth - 1.6), zy, 0.1, 0.7, 0.7, glass)
                 else:  # oeste
                     b.box(-s.width / 2, t * (s.depth - 1.6), zy, 0.1, 0.7, 0.7, glass)
-        b.mesh.mark_component("windows", start)
+        if len(b.mesh.faces) > start:
+            b.mesh.mark_component("windows", start)
         # The finish changes facade structure, while all colors remain in Style.
+        start = len(b.mesh.faces)
         if s.wall_finish == "timber":
             b.box(0, s.depth / 2 + 0.03, 0, s.width, 0.06, 0.12, wood)
             for x in (-s.width * .35, 0, s.width * .35): b.box(x, s.depth / 2 + .03, 0, .10, .06, wall_h, wood)
         elif s.wall_finish == "stone":
             for z in (wall_h * .25, wall_h * .5, wall_h * .75): b.box(0, s.depth / 2 + .03, z, s.width, .05, .05, wood)
+        if len(b.mesh.faces) > start:
+            b.mesh.mark_component("facade_details", start)
         return b.mesh

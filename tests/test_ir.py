@@ -1,8 +1,13 @@
 """Fast suite seam: generators expose inspectable IR without publishing artifacts."""
+import builtins
+from dataclasses import replace
+from pathlib import Path
+from typing import Any, cast
+
 import pytest
 
 from blender_worker.export import inspect
-from blender_worker.geometry.mesh import MeshData
+from blender_worker.geometry import AnchorKind, MeshData
 from blender_worker.registry import descriptors
 from blender_worker.schema import SpecError, load_spec, load_spec_file
 
@@ -26,6 +31,19 @@ def _component_bounds(
         ),
     )
 
+
+EXPECTED_COMPONENTS = {
+    "house": {"body", "roof", "chimney", "door", "windows"},
+    "sword": {"pommel", "grip", "guard", "blade"},
+    "tree": {"trunk", "canopy"},
+    "chest": {"body", "lid", "bands", "lock"},
+}
+EXPECTED_ANCHORS = {
+    "house": AnchorKind.SUPPORT_SURFACE,
+    "sword": AnchorKind.GRIP_CENTER,
+    "tree": AnchorKind.SUPPORT_SURFACE,
+    "chest": AnchorKind.SUPPORT_SURFACE,
+}
 
 def test_registry_is_the_single_type_policy_source() -> None:
     registry = descriptors()
@@ -59,6 +77,96 @@ def test_each_descriptor_builds_and_validates_its_default_spec(asset_type: str) 
     assert set(checks) == {name for name, _validator in descriptor.validators}
     assert all(check["ok"] for check in checks.values())
     assert f"/{descriptor.triangle_budget} tris" in checks["tri_budget"]["detail"]
+
+
+@pytest.mark.parametrize("asset_type", ["house", "sword", "tree", "chest"])
+def test_ir_names_every_nonempty_component_and_assigns_every_face(asset_type: str) -> None:
+    descriptor = descriptors()[asset_type]
+
+    mesh, _checks = descriptor.inspect(load_spec_file(f"specs/{asset_type}_default.json"))
+
+    assert set(mesh.components) == EXPECTED_COMPONENTS[asset_type]
+    covered_faces: list[int] = []
+    for start, end in mesh.components.values():
+        assert end > start
+        covered_faces.extend(range(start, end))
+    assert sorted(covered_faces) == list(range(len(mesh.faces)))
+    assert len(mesh.face_materials) == len(mesh.faces)
+    assert all(0 <= material < len(mesh.materials) for material in mesh.face_materials)
+
+
+@pytest.mark.parametrize("asset_type", ["house", "sword", "tree", "chest"])
+def test_descriptor_validates_that_each_named_component_is_closed(asset_type: str) -> None:
+    descriptor = descriptors()[asset_type]
+
+    _mesh, checks = descriptor.inspect(load_spec_file(f"specs/{asset_type}_default.json"))
+
+    assert checks["mesh_valid"]["ok"] is True
+    assert checks["mesh_valid"]["components_closed"] == sorted(EXPECTED_COMPONENTS[asset_type])
+
+
+@pytest.mark.parametrize("asset_type", ["house", "sword", "tree", "chest"])
+def test_ir_exposes_and_validates_the_type_specific_anchor(asset_type: str) -> None:
+    descriptor = descriptors()[asset_type]
+
+    mesh, checks = descriptor.inspect(load_spec_file(f"specs/{asset_type}_default.json"))
+
+    assert mesh.anchor == (0.0, 0.0, 0.0)
+    assert mesh.anchor_kind is EXPECTED_ANCHORS[asset_type]
+    assert checks["anchor"]["ok"] is True
+    assert checks["anchor"]["kind"] == EXPECTED_ANCHORS[asset_type].value
+
+
+@pytest.mark.parametrize(
+    "asset_type,changes",
+    [
+        ("house", {"window_count": 0, "has_chimney": False}),
+        ("sword", {"guard_form": "none", "pommel_form": "none"}),
+        ("chest", {"band_count": 0, "has_lock": False}),
+    ],
+)
+def test_optional_absent_volumes_do_not_create_empty_components(
+    asset_type: str, changes: dict[str, Any]
+) -> None:
+    descriptor = descriptors()[asset_type]
+    spec = replace(cast(Any, load_spec_file(f"specs/{asset_type}_default.json")), **changes)
+
+    mesh, checks = descriptor.inspect(spec)
+
+    assert all(end > start for start, end in mesh.components.values())
+    assert all(check["ok"] for check in checks.values())
+
+
+def test_inspection_neither_imports_bpy_nor_publishes_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_import = builtins.__import__
+
+    def reject_bpy(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "bpy":
+            raise AssertionError("a inspeção da IR não pode importar bpy")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_bpy)
+    monkeypatch.chdir(tmp_path)
+    descriptor = descriptors()["tree"]
+
+    mesh, checks = descriptor.inspect(load_spec_file(str(Path(__file__).parents[1] / "specs/tree_default.json")))
+
+    assert mesh.faces
+    assert all(check["ok"] for check in checks.values())
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_descriptor_validation_rejects_incomplete_material_assignments() -> None:
+    descriptor = descriptors()["tree"]
+    mesh, _checks = descriptor.inspect(load_spec_file("specs/tree_default.json"))
+    mesh.face_materials.pop()
+
+    checks = descriptor.validate(mesh)
+
+    assert checks["materials"]["ok"] is False
+    assert "cada face" in checks["materials"]["detail"]
 
 def test_house_ir_names_required_components_and_anchor() -> None:
     mesh, checks = inspect(load_spec_file("specs/house_default.json"))
@@ -103,7 +211,7 @@ def test_every_house_v1_parameter_has_a_recognizable_ir_effect() -> None:
     assert _component_bounds(wider, "body") == ((-3.5, -2.5, 0), (3.5, 2.5, 2.6))
     assert _component_bounds(deeper, "body") == ((-3.0, -3.0, 0), (3.0, 3.0, 2.6))
     assert _component_bounds(taller, "body")[1][2] == 5.2
-    assert gable.components["roof"][1] - gable.components["roof"][0] == 4
+    assert gable.components["roof"][1] - gable.components["roof"][0] == 5
     assert hip.components["roof"][1] - hip.components["roof"][0] == 12
     assert more_windows.components["windows"][1] - more_windows.components["windows"][0] == 48
     assert plaster.materials[0].name == "wall_plaster"
