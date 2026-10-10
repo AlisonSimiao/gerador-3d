@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import math
 
-from .mesh import MaterialDef, MeshData
+from .mesh import AnchorKind, MaterialDef, MeshData
 
 
 class MeshBuilder:
-    """Acumula primitivas low-poly numa MeshData com origem na base-centro."""
+    """Acumula primitivas low-poly na representação intermediária pública."""
 
     def __init__(self) -> None:
         self.mesh = MeshData()
@@ -58,7 +58,7 @@ class MeshBuilder:
         base = len(v)
         v.extend([(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
                   (cx, cy, z1)])
-        self.mesh.add_face((base, base + 1, base + 2, base + 3), mat)
+        self.mesh.add_face((base + 3, base + 2, base + 1, base), mat)
         for i in range(4):
             self.mesh.add_face((base + i, base + (i + 1) % 4, base + 4), mat)
 
@@ -78,6 +78,7 @@ class MeshBuilder:
         m((b + 2, b + 3, b + 4, b + 5), mat)  # água norte
         m((b, b + 4, b + 3), mat)  # frontão oeste
         m((b + 1, b + 2, b + 5), mat)  # frontão leste
+        m((b, b + 3, b + 2, b + 1), mat)  # fechamento inferior
 
     def cylinder(self, cx: float, cy: float, z0: float, r0: float, r1: float,
                  h: float, segments: int, mat: int, cap_top: bool = True) -> None:

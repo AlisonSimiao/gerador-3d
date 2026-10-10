@@ -1,4 +1,4 @@
-"""Gerador `chest` (objetos/móveis — Marco 1). Origem na base-centro."""
+"""Gerador `chest` (objetos/móveis — Marco 1). Âncora no centro do apoio."""
 
 from __future__ import annotations
 
@@ -38,12 +38,14 @@ class ChestGenerator(BaseGenerator[ChestSpec]):
         for i in range(s.band_count):
             t = (i + 1) / (s.band_count + 1) - 0.5 if s.band_count else 0.0
             b.box(t * s.width * 0.8, 0, 0, 0.06 + rng.uniform(0, .02), s.depth, s.height, iron)
-        b.mesh.mark_component("bands", start)
+        if len(b.mesh.faces) > start:
+            b.mesh.mark_component("bands", start)
         # Fechadura
         start = len(b.mesh.faces)
         if s.has_lock:
             b.box(0, s.depth / 2 - 0.03, body_h - 0.05, 0.14, 0.06, 0.18, gold)
-        b.mesh.mark_component("lock", start)
+        if len(b.mesh.faces) > start:
+            b.mesh.mark_component("lock", start)
         return b.mesh
 
     def _arch_lid(self, b: MeshBuilder, w: float, d: float, z0: float,
@@ -65,11 +67,15 @@ class ChestGenerator(BaseGenerator[ChestSpec]):
         for i in range(segs):
             mesh.add_face((ring0[i], ring0[i + 1], ring1[i + 1], ring1[i]), mat)
         # tampas laterais (fan)
+        centers = []
         for ring, x in ((ring0, -w / 2), (ring1, w / 2)):
             c = len(mesh.vertices)
             mesh.vertices.append((x, 0, z0))
+            centers.append(c)
             for i in range(segs):
                 if x < 0:
                     mesh.add_face((c, ring[i + 1], ring[i]), mat)
                 else:
                     mesh.add_face((c, ring[i], ring[i + 1]), mat)
+        mesh.add_face((ring0[0], ring1[0], centers[1], centers[0]), mat)
+        mesh.add_face((centers[0], centers[1], ring1[-1], ring0[-1]), mat)

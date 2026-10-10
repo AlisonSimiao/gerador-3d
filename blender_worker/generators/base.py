@@ -34,7 +34,7 @@ class BaseGenerator(ABC, Generic[S]):
 
     @abstractmethod
     def build(self) -> MeshData:
-        """Constrói a malha (origem na base-centro, metros, rotação zerada)."""
+        """Constrói a IR em metros, com a Âncora semântica do Tipo na origem."""
 
     def build_bpy_objects(self, mesh: MeshData) -> list[Any]:
         """Converte MeshData em objetos bpy quando bpy está disponível.
