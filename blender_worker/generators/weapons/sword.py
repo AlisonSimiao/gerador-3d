@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 
 from ...geometry import MeshBuilder
-from ...geometry.mesh import MeshData
+from ...geometry.mesh import AnchorKind, MeshData
 from ...materials import metal_material
 from ...schema import SwordSpec
 from ..base import BaseGenerator, register
@@ -17,6 +17,7 @@ class SwordGenerator(BaseGenerator[SwordSpec]):
         s = self.spec
         rng = random.Random(s.seed)
         b = MeshBuilder()
+        b.mesh.anchor_kind = AnchorKind.GRIP_CENTER
         steel = b.mesh.add_material(metal_material(self.style, "steel", "blade_steel"))
         iron = b.mesh.add_material(metal_material(self.style, "iron", "guard_iron"))
         gold = b.mesh.add_material(metal_material(self.style, "gold", "pommel_gold"))
@@ -30,7 +31,8 @@ class SwordGenerator(BaseGenerator[SwordSpec]):
             b.octahedron(0, 0, grip_start - 0.05, 0.05, mat=gold)
         elif s.pommel_form == "faceted":
             b.box(0, 0, grip_start - 0.03, 0.07, 0.07, 0.03, gold)
-        b.mesh.mark_component("pommel", start)
+        if len(b.mesh.faces) > start:
+            b.mesh.mark_component("pommel", start)
         # Empunhadura
         start = len(b.mesh.faces); b.cylinder(0, 0, grip_start, 0.025, 0.025, s.grip_length, 6, grip_m)
         b.mesh.mark_component("grip", start); z = s.grip_length / 2
@@ -44,7 +46,8 @@ class SwordGenerator(BaseGenerator[SwordSpec]):
             b.box(-0.12, 0, z + 0.03, 0.04, 0.04, 0.05, iron)
             b.box(0.12, 0, z + 0.03, 0.04, 0.04, 0.05, iron)
             z += 0.03
-        b.mesh.mark_component("guard", start)
+        if len(b.mesh.faces) > start:
+            b.mesh.mark_component("guard", start)
         # Lâmina (afunila até a ponta)
         start = len(b.mesh.faces); bw = s.blade_width; thickness = 0.32 + rng.uniform(-0.04, 0.04)
         b.tapered_box(0, 0, z, bw, bw * thickness, bw * 0.15, bw * thickness * .3,

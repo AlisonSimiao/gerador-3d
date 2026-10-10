@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class AnchorKind(str, Enum):
+    """Semantic meaning of the origin for an Asset Type."""
+
+    SUPPORT_SURFACE = "support_surface_center"
+    GRIP_CENTER = "grip_center"
 
 
 @dataclass
@@ -23,6 +31,7 @@ class MeshData:
     materials: list[MaterialDef] = field(default_factory=list)
     components: dict[str, tuple[int, int]] = field(default_factory=dict)
     anchor: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    anchor_kind: AnchorKind = AnchorKind.SUPPORT_SURFACE
 
     def mark_component(self, name: str, start_face: int) -> None:
         self.components[name] = (start_face, len(self.faces))

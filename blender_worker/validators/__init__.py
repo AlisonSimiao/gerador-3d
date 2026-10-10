@@ -5,16 +5,18 @@ from __future__ import annotations
 import struct
 from typing import Any
 
-from ..geometry.mesh import MeshData
+from ..geometry.mesh import AnchorKind, MeshData
 
 def _ok(ok: bool, detail: str = "") -> dict[str, Any]:
     return {"ok": ok, "detail": detail}
 
 
 def check_mesh_valid(mesh: MeshData, _spec_type: str = "") -> dict[str, Any]:
-    """Sem faces degeneradas nem geometria não-manifold (checagem de arestas)."""
+    """Validate named, closed component volumes in the Blender-independent IR."""
     if not mesh.faces:
         return _ok(False, "malha sem faces")
+    if not mesh.components:
+        return _ok(False, "malha sem componentes nomeados")
     # Degeneradas: índices duplicados ou área ~0
     for i, face in enumerate(mesh.faces):
         if len(set(face)) != len(face):
@@ -40,17 +42,31 @@ def check_mesh_valid(mesh: MeshData, _spec_type: str = "") -> dict[str, Any]:
         area2 = (ax * ax + ay * ay + az * az) ** 0.5
         if area2 < 1e-12:
             return _ok(False, f"face {i} degenerada (área ~0)")
-    # Não-manifold: aresta compartilhada por >2 faces (borda com 1 é OK)
-    edge_count: dict[tuple[int, int], int] = {}
-    for face in mesh.faces:
-        n = len(face)
-        for k in range(n):
-            e = (min(face[k], face[(k + 1) % n]), max(face[k], face[(k + 1) % n]))
-            edge_count[e] = edge_count.get(e, 0) + 1
-    bad = [e for e, c in edge_count.items() if c > 2]
-    if bad:
-        return _ok(False, f"{len(bad)} arestas não-manifold (ex.: {bad[0]})")
-    return _ok(True, f"{len(mesh.faces)} faces, {len(mesh.vertices)} verts, manifold")
+    covered: list[int] = []
+    closed: list[str] = []
+    for name, (start, end) in mesh.components.items():
+        if not name or start < 0 or end > len(mesh.faces) or start >= end:
+            return _ok(False, f"componente {name!r} possui intervalo de faces inválido")
+        covered.extend(range(start, end))
+        directed_edges: dict[tuple[int, int], int] = {}
+        for face in mesh.faces[start:end]:
+            for index, vertex in enumerate(face):
+                edge = (vertex, face[(index + 1) % len(face)])
+                directed_edges[edge] = directed_edges.get(edge, 0) + 1
+        bad_edges = [
+            edge for edge, count in directed_edges.items()
+            if count != 1 or directed_edges.get((edge[1], edge[0])) != 1
+        ]
+        if bad_edges:
+            return _ok(False, f"componente {name!r} não é um volume fechado e orientado")
+        closed.append(name)
+    if sorted(covered) != list(range(len(mesh.faces))):
+        return _ok(False, "faces devem pertencer exatamente a um componente nomeado")
+    return {
+        "ok": True,
+        "detail": f"{len(mesh.faces)} faces, {len(mesh.vertices)} verts, componentes fechados",
+        "components_closed": sorted(closed),
+    }
 
 
 def check_tri_budget(mesh: MeshData, spec_type: str) -> dict[str, Any]:
@@ -65,34 +81,48 @@ def check_tri_budget(mesh: MeshData, spec_type: str) -> dict[str, Any]:
 def check_materials(mesh: MeshData, _spec_type: str = "") -> dict[str, Any]:
     if not mesh.materials:
         return _ok(False, "nenhum material atribuído")
+    if len(mesh.face_materials) != len(mesh.faces):
+        return _ok(False, "cada face deve possuir exatamente uma atribuição de material")
     for i, m in enumerate(mesh.face_materials):
         if m < 0 or m >= len(mesh.materials):
             return _ok(False, f"face {i} com material inválido ({m})")
     return _ok(True, f"{len(mesh.materials)} materiais, todas as faces cobertas")
 
 
-def check_transform(mesh: MeshData, spec_type: str) -> dict[str, Any]:
-    """Validate the Type-specific Anchor at the origin and scale in metres."""
+def check_transform(mesh: MeshData, _spec_type: str = "") -> dict[str, Any]:
+    """Validate positioning from the IR's semantic Anchor, independent of Type dispatch."""
     if not mesh.vertices:
         return _ok(False, "malha vazia")
     (x0, y0, z0), (x1, y1, z1) = mesh.bounds()
     if mesh.anchor != (0.0, 0.0, 0.0):
         return _ok(False, f"Âncora fora da origem: {mesh.anchor}")
-    if spec_type == "sword":
-        if not z0 <= 0 <= z1:
-            return _ok(False, "centro da empunhadura não coincide com a origem")
-    elif abs(z0) > 1e-6:
-        return _ok(False, f"superfície de apoio fora da origem (zmin={z0:.4f})")
-    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    # Copas assimétricas (ex.: árvore) deslocam o centro; tolerar até 15% da extensão.
-    tol_x = max(0.05, 0.15 * (x1 - x0))
-    tol_y = max(0.05, 0.15 * (y1 - y0))
-    if abs(cx) > tol_x or abs(cy) > tol_y:
-        return _ok(False, f"centro XY fora da origem ({cx:.4f}, {cy:.4f})")
+    if mesh.anchor_kind is AnchorKind.SUPPORT_SURFACE:
+        if abs(z0 - mesh.anchor[2]) > 1e-6 or not (x0 <= 0 <= x1 and y0 <= 0 <= y1):
+            return _ok(False, "centro da superfície de apoio não coincide com a Âncora")
+    elif mesh.anchor_kind is AnchorKind.GRIP_CENTER:
+        grip = mesh.components.get("grip")
+        if grip is None:
+            return _ok(False, "componente 'grip' ausente para Âncora de empunhadura")
+        vertex_indices = {
+            vertex for face in mesh.faces[grip[0]:grip[1]] for vertex in face
+        }
+        coordinates = [mesh.vertices[index] for index in vertex_indices]
+        grip_center = tuple(
+            (min(point[axis] for point in coordinates) + max(point[axis] for point in coordinates)) / 2
+            for axis in range(3)
+        )
+        if any(abs(grip_center[axis] - mesh.anchor[axis]) > 1e-6 for axis in range(3)):
+            return _ok(False, "centro da empunhadura não coincide com a Âncora")
+    else:
+        return _ok(False, f"semântica de Âncora desconhecida: {mesh.anchor_kind!r}")
     size = max(x1 - x0, y1 - y0, z1 - z0)
     if not (0.05 <= size <= 60.0):
         return _ok(False, f"escala implausível ({size:.2f} m)")
-    return _ok(True, f"Âncora OK, extensão {size:.2f} m")
+    return {
+        "ok": True,
+        "detail": f"Âncora {mesh.anchor_kind.value} OK, extensão {size:.2f} m",
+        "kind": mesh.anchor_kind.value,
+    }
 
 
 def check_glb(path: str) -> dict[str, Any]:
