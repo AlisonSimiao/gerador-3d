@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from .export import GenerateError, generate_in_process_from_spec_file
+from .failures import FailureCode
 from .schema import SpecError
 
 
@@ -16,7 +18,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         generate_in_process_from_spec_file(args.spec, args.out, force=args.force)
-    except (SpecError, GenerateError):
+    except (SpecError, GenerateError) as error:
+        # Structured stderr so the parent CLI can report the exact failure
+        # code even when no fresh report exists (e.g. an occupied destination
+        # the attempt must leave untouched).
+        code = error.code if isinstance(error, GenerateError) else FailureCode.INPUT_INVALID.value
+        print(f"{code}: {error}", file=sys.stderr)
         return 1
     return 0
 

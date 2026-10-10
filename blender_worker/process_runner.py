@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import shutil
 import subprocess
@@ -29,6 +30,17 @@ def _remove_attempt_staging(parent: Path, attempt_id: str) -> None:
     for path in parent.glob(f".generation-{attempt_id}-*"):
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
+
+
+def _code_from_stderr(stderr: str) -> tuple[FailureCode, str] | None:
+    """Recover the child's structured `code: detail` line, if it printed one."""
+    match = re.search(r"^([\w][\w.]*): (.*)$", stderr, re.M)
+    if not match:
+        return None
+    try:
+        return FailureCode(match.group(1)), match.group(2)
+    except ValueError:
+        return None
 
 
 def _write_runner_failure(out_dir: Path, code: FailureCode, detail: str,
@@ -69,6 +81,11 @@ def run_generation_process(
     timeout = _timeout_seconds(timeout_seconds)
     destination = Path(out_dir).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
+    report_path = destination / "report.json"
+    # A failed attempt never overwrites an occupied destination, so a report
+    # identical to this snapshot is the previous Result of Generation — stale,
+    # never the current attempt's. Only a fresh report may be trusted below.
+    previous_report = report_path.read_bytes() if report_path.is_file() else None
     attempt_id = uuid.uuid4().hex
     executable = os.environ.get("GERADOR_3D_PYTHON", sys.executable)
     command = [
@@ -124,12 +141,23 @@ def run_generation_process(
 
     report_path = destination / "report.json"
     report: dict | None = json.loads(report_path.read_text()) if report_path.is_file() else None
+    fresh = report is not None and (
+        previous_report is None or report_path.read_bytes() != previous_report
+    )
     try:
         if process.returncode != 0:
-            if report is None:
-                detail = stderr.strip() or f"processo Blender terminou com status {process.returncode}"
+            if report is None or not fresh:
+                # No report from this attempt (occupied destination or a child
+                # that died before reporting): recover the structured code
+                # from stderr instead of trusting a stale report.
+                parsed = _code_from_stderr(stderr)
+                if parsed is not None:
+                    code, detail = parsed
+                else:
+                    code = FailureCode.ENVIRONMENT_UNAVAILABLE
+                    detail = stderr.strip() or f"processo Blender terminou com status {process.returncode}"
                 stages, peak = clock.snapshot()
-                report = _write_runner_failure(destination, FailureCode.ENVIRONMENT_UNAVAILABLE, detail,
+                report = _write_runner_failure(destination, code, detail,
                                                stages=stages, peak=peak)
             try:
                 code = FailureCode(report["error"]["code"])
