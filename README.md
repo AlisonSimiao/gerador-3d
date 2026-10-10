@@ -33,13 +33,19 @@ uv pip install -e '.[dev]'   # instala bpy==5.2.2 no Python 3.13
 ```bash
 uv run python -m blender_worker generate \
   --spec specs/house_default.json \
-  --out output/house_001
+  --out output/house_001 \
+  --timeout-seconds 300
 ```
 
 Saída atômica em `--out`: `model.glb`, prancha `preview.png` (1024 px) e
 `report.json`. Um destino ocupado falha sem alterações; use `--force` para
 substituí-lo atomicamente. Falhas produzem exit diferente de zero e, quando o
 destino puder ser criado, apenas um relatório com código estruturado.
+
+Cada Tentativa oficial roda em um processo Python com `bpy` novo, encerrado e
+recolhido ao terminar. O timeout também pode ser definido por
+`GERADOR_3D_TIMEOUT_SECONDS`; `GERADOR_3D_PYTHON` seleciona o Python 3.13 do
+ambiente Blender quando ele não for o executável que iniciou a CLI.
 
 ## Testes e typecheck
 

@@ -253,7 +253,8 @@ def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
     os.makedirs(parent, exist_ok=True)
     if os.path.exists(destination) and os.listdir(destination) and not force:
         raise GenerateError("destino já contém um Resultado de Geração", FailureCode.PUBLICATION_FAILED)
-    stage = tempfile.mkdtemp(prefix=".generation-", dir=parent)
+    attempt_id = os.environ.get("GERADOR_3D_ATTEMPT_ID", "local")
+    stage = tempfile.mkdtemp(prefix=f".generation-{attempt_id}-", dir=parent)
     mesh, checks = inspect(spec)
     failed = {k: v for k, v in checks.items() if not v["ok"]}
     if failed:
@@ -305,6 +306,7 @@ def _report(spec: AnySpec, mesh: MeshData, checks: dict, ok: bool, renderer: str
         "schema_version": 1, "status": "success" if ok else "failure", "ok": ok,
         "stage": "published" if ok else "validation", "backend": renderer, "renderer": renderer,
         "environment": {"worker": "0.1.0", "blender": _blender_version(), "python": platform.python_version(),
+                        "process_id": os.getpid(),
                         "render_profile": "medieval_lowpoly-v1"},
         "resolved_spec": spec_to_dict(spec), "spec": spec_to_dict(spec),
         "tri_count": mesh.tri_count(),
@@ -329,7 +331,7 @@ def _write_report(out_dir: str, report: dict) -> None:
         json.dump(report, f, indent=2, ensure_ascii=False)
 
 
-def generate_from_spec_file(spec_path: str, out_dir: str, *, force: bool = False) -> dict:
+def generate_in_process_from_spec_file(spec_path: str, out_dir: str, *, force: bool = False) -> dict:
     try:
         return generate(load_spec_file(spec_path), out_dir, force=force)
     except Exception as error:
@@ -345,6 +347,7 @@ def generate_from_spec_file(spec_path: str, out_dir: str, *, force: bool = False
                 report = {"schema_version": 1, "status": "failure", "ok": False, "stage": "input",
                           "backend": "bpy" if bpy_available() else None,
                           "environment": {"worker": "0.1.0", "blender": _blender_version(),
+                                          "process_id": os.getpid(),
                                           "python": platform.python_version(), "render_profile": "medieval_lowpoly-v1"},
                           "resolved_spec": None, "checks": {}, "artifacts": ["report.json"],
                           "error": structured_error(code, str(error)),
@@ -353,3 +356,14 @@ def generate_from_spec_file(spec_path: str, out_dir: str, *, force: bool = False
             except OSError:
                 pass
         raise
+
+
+def generate_from_spec_file(
+    spec_path: str, out_dir: str, *, force: bool = False, timeout_seconds: float | None = None
+) -> dict:
+    """Run one official generation in a fresh process."""
+    from .process_runner import run_generation_process
+
+    return run_generation_process(
+        spec_path, out_dir, force=force, timeout_seconds=timeout_seconds
+    )
