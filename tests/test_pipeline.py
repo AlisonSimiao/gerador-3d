@@ -42,3 +42,24 @@ def test_invalid_spec_blocks_generation(tmp_path: Path) -> None:
                                "band_count": 2, "has_lock": True, "style": "medieval_lowpoly"}))
     with pytest.raises((GenerateError, Exception)):
         generate_from_spec_file(str(bad), str(tmp_path / "out"))
+
+
+def test_report_records_the_fully_resolved_spec(tmp_path: Path) -> None:
+    source = tmp_path / "minimal-house.json"
+    source.write_text(json.dumps({"spec_version": 1, "type": "house", "seed": 42}))
+
+    report = generate_from_spec_file(str(source), str(tmp_path / "out"))
+
+    assert report["resolved_spec"] == {
+        "spec_version": 1,
+        "type": "house",
+        "seed": 42,
+        "width": 6.0,
+        "depth": 5.0,
+        "floors": 1,
+        "roof_form": "gable",
+        "wall_finish": "plaster",
+        "window_count": 4,
+        "has_chimney": True,
+        "style": "medieval_lowpoly",
+    }

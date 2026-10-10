@@ -101,6 +101,8 @@ class ChestSpec(BaseSpec):
 
 
 AnySpec = Union[HouseSpec, SwordSpec, TreeSpec, ChestSpec]
+
+
 def _matches(value: Any, annotation: Any) -> bool:
     origin = get_origin(annotation)
     if origin is Literal:
@@ -148,20 +150,55 @@ def spec_to_dict(spec: AnySpec) -> dict[str, Any]:
 
 def json_schema_for(spec_type: str) -> dict[str, Any]:
     from .registry import get_descriptor
-    descriptor = get_descriptor(spec_type); cls = descriptor.spec_class
-    hints = get_type_hints(cls); properties: dict[str, Any] = {}; required = []
+
+    descriptor = get_descriptor(spec_type)
+    cls = descriptor.spec_class
+    hints = get_type_hints(cls)
+    properties: dict[str, Any] = {}
+    required = []
     for field in fields(cls):
-        annotation = hints[field.name]; values = get_args(annotation)
-        prop: dict[str, Any] = ({"enum": list(values), "type": _json_type(type(values[0]))}
-                                if get_origin(annotation) is Literal
-                                else {"type": _json_type(annotation)})
+        annotation = hints[field.name]
+        values = get_args(annotation)
+        prop: dict[str, Any]
+        if get_origin(annotation) is Literal:
+            prop = {"type": _json_type(type(values[0]))}
+            if len(values) == 1:
+                prop["const"] = values[0]
+            else:
+                prop["enum"] = list(values)
+        else:
+            prop = {"type": _json_type(annotation)}
         properties[field.name] = prop
         if field.name in descriptor.numeric_bounds:
             prop["minimum"], prop["maximum"] = descriptor.numeric_bounds[field.name]
-        if field.default is MISSING: required.append(field.name)
-        else: prop["default"] = field.default
-    return {"$schema": "https://json-schema.org/draft/2020-12/schema", "title": cls.__name__, "type": "object",
-            "additionalProperties": False, "properties": properties, "required": required}
+        if field.default is MISSING:
+            required.append(field.name)
+        else:
+            prop["default"] = field.default
+    return {
+        "title": cls.__name__,
+        "type": "object",
+        "additionalProperties": False,
+        "properties": properties,
+        "required": required,
+    }
+
+
+def versioned_json_schema(spec_version: int) -> dict[str, Any]:
+    """Return the complete public input contract for one supported Spec version."""
+    if type(spec_version) is not int or spec_version != BaseSpec.SPEC_VERSION:
+        raise SpecError(f"spec_version={spec_version!r} não suportada; esperado 1")
+
+    from .registry import descriptors
+
+    registered = descriptors()
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": f"https://gerador-3d.local/schemas/spec-v{spec_version}.schema.json",
+        "title": f"Gerador 3D Spec v{spec_version}",
+        "oneOf": [{"$ref": f"#/$defs/{name}"} for name in registered],
+        "$defs": {name: json_schema_for(name) for name in registered},
+    }
 
 
 def _json_type(annotation: Any) -> str:
