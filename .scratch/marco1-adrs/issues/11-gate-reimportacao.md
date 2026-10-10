@@ -4,7 +4,7 @@
 
 **Blocked by:** 09: Exportação oficial glTF com conversão de coordenadas
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] Reimportação do GLB roda dentro da Tentativa, antes de qualquer publicação
 - [ ] Gate comprova: topologia por componente, materiais atribuídos, Âncora na origem, transformações, unidades, integridade do Asset
