@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Iterable
 
 
 class AnchorKind(str, Enum):
@@ -57,6 +58,50 @@ class MeshData:
         xs = [v[0] for v in self.vertices]
         ys = [v[1] for v in self.vertices]
         zs = [v[2] for v in self.vertices]
+        return ((min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs)))
+
+    def component_bounds(
+        self, name: str
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        """Return the axis-aligned extent of one named IR component."""
+        start, end = self.components[name]
+        return self._face_bounds(range(start, end))
+
+    def component_volume_bounds(
+        self, name: str
+    ) -> list[tuple[tuple[float, float, float], tuple[float, float, float]]]:
+        """Return extents of disconnected closed volumes in a named component."""
+        start, end = self.components[name]
+        remaining = set(range(start, end))
+        by_vertex: dict[int, set[int]] = {}
+        for face_index in remaining:
+            for vertex_index in self.faces[face_index]:
+                by_vertex.setdefault(vertex_index, set()).add(face_index)
+
+        volumes: list[set[int]] = []
+        while remaining:
+            pending = [min(remaining)]
+            volume: set[int] = set()
+            while pending:
+                face_index = pending.pop()
+                if face_index not in remaining:
+                    continue
+                remaining.remove(face_index)
+                volume.add(face_index)
+                for vertex_index in self.faces[face_index]:
+                    pending.extend(by_vertex[vertex_index] & remaining)
+            volumes.append(volume)
+        return [self._face_bounds(volume) for volume in volumes]
+
+    def _face_bounds(
+        self, face_indexes: Iterable[int]
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        indexes = list(face_indexes)
+        vertex_indexes = {index for face in indexes for index in self.faces[face]}
+        vertices = [self.vertices[index] for index in vertex_indexes]
+        xs = [vertex[0] for vertex in vertices]
+        ys = [vertex[1] for vertex in vertices]
+        zs = [vertex[2] for vertex in vertices]
         return ((min(xs), min(ys), min(zs)), (max(xs), max(ys), max(zs)))
 
     def triangulated(self) -> list[tuple[tuple[int, int, int], int]]:

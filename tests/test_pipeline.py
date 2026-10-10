@@ -118,3 +118,15 @@ def test_official_glb_has_blender_provenance_and_the_coordinate_contract(tmp_pat
     assert report["checks"]["reimport"]["root_nodes"] == 1
     assert report["checks"]["reimport"]["mesh_count"] == 1
     assert report["checks"]["reimport"]["root_transform_identity"] is True
+
+
+def test_canonical_house_passes_the_official_pipeline_within_budget(tmp_path: Path) -> None:
+    report = generate_from_spec_file(
+        "acceptance/house/canonical.json", str(tmp_path / "canonical-house")
+    )
+
+    assert report["status"] == "success"
+    assert report["resolved_spec"]["type"] == "house"
+    assert report["tri_count"] <= get_descriptor("house").triangle_budget
+    assert all(check["ok"] for check in report["checks"].values())
+>>>>>>> origin/integration/marco1-adrs

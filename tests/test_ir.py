@@ -7,29 +7,9 @@ from typing import Any, cast
 import pytest
 
 from blender_worker.export import inspect
-from blender_worker.geometry import AnchorKind, MeshData
+from blender_worker.geometry import AnchorKind
 from blender_worker.registry import descriptors
 from blender_worker.schema import SpecError, load_spec, load_spec_file
-
-
-def _component_bounds(
-    mesh: MeshData, component: str
-) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-    start, end = mesh.components[component]
-    vertex_indexes = {index for face in mesh.faces[start:end] for index in face}
-    vertices = [mesh.vertices[index] for index in vertex_indexes]
-    return (
-        (
-            min(vertex[0] for vertex in vertices),
-            min(vertex[1] for vertex in vertices),
-            min(vertex[2] for vertex in vertices),
-        ),
-        (
-            max(vertex[0] for vertex in vertices),
-            max(vertex[1] for vertex in vertices),
-            max(vertex[2] for vertex in vertices),
-        ),
-    )
 
 
 EXPECTED_COMPONENTS = {
@@ -191,6 +171,57 @@ def test_house_chimney_presence_is_explicit_in_the_ir() -> None:
     assert "chimney" not in without_chimney.components
 
 
+def test_house_distributes_the_exact_window_total_deterministically() -> None:
+    descriptor = descriptors()["house"]
+    spec = load_spec(
+        {"spec_version": 1, "type": "house", "seed": 42, "window_count": 10}
+    )
+
+    first, _ = descriptor.inspect(spec)
+    second, _ = descriptor.inspect(spec)
+    first_windows = first.component_volume_bounds("windows")
+    second_windows = second.component_volume_bounds("windows")
+
+    assert first_windows == second_windows
+    assert len(first_windows) == 10
+    centers = [
+        tuple((lower[axis] + upper[axis]) / 2 for axis in range(3))
+        for lower, upper in first_windows
+    ]
+    assert sum(center[1] == 2.5 for center in centers) == 3
+    assert sum(center[1] == -2.5 for center in centers) == 3
+    assert sum(center[0] == 3.0 for center in centers) == 2
+    assert sum(center[0] == -3.0 for center in centers) == 2
+
+
+def test_house_body_dimensions_exclude_the_roof_overhang() -> None:
+    descriptor = descriptors()["house"]
+    mesh, _ = descriptor.inspect(load_spec_file("specs/house_default.json"))
+
+    assert mesh.component_bounds("body") == ((-3.0, -2.5, 0), (3.0, 2.5, 2.6))
+    roof_lower, roof_upper = mesh.component_bounds("roof")
+    assert roof_lower[0] < -3.0
+    assert roof_lower[1] < -2.5
+    assert roof_upper[0] > 3.0
+    assert roof_upper[1] > 2.5
+
+
+def test_house_door_is_one_visual_volume_for_every_supported_variant() -> None:
+    descriptor = descriptors()["house"]
+    variants: list[dict[str, Any]] = [
+        {},
+        {"roof_form": "hip", "wall_finish": "stone", "has_chimney": False},
+        {"window_count": 0, "floors": 3, "depth": 4.5},
+    ]
+
+    for changes in variants:
+        mesh, checks = descriptor.inspect(
+            load_spec({"spec_version": 1, "type": "house", "seed": 42, **changes})
+        )
+        assert len(mesh.component_volume_bounds("door")) == 1
+        assert all(check["ok"] for check in checks.values())
+
+
 def test_every_house_v1_parameter_has_a_recognizable_ir_effect() -> None:
     descriptor = descriptors()["house"]
 
@@ -208,9 +239,9 @@ def test_every_house_v1_parameter_has_a_recognizable_ir_effect() -> None:
     plaster = house(wall_finish="plaster")
     stone = house(wall_finish="stone")
 
-    assert _component_bounds(wider, "body") == ((-3.5, -2.5, 0), (3.5, 2.5, 2.6))
-    assert _component_bounds(deeper, "body") == ((-3.0, -3.0, 0), (3.0, 3.0, 2.6))
-    assert _component_bounds(taller, "body")[1][2] == 5.2
+    assert wider.component_bounds("body") == ((-3.5, -2.5, 0), (3.5, 2.5, 2.6))
+    assert deeper.component_bounds("body") == ((-3.0, -3.0, 0), (3.0, 3.0, 2.6))
+    assert taller.component_bounds("body")[1][2] == 5.2
     assert gable.components["roof"][1] - gable.components["roof"][0] == 5
     assert hip.components["roof"][1] - hip.components["roof"][0] == 12
     assert more_windows.components["windows"][1] - more_windows.components["windows"][0] == 48
