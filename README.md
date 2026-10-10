@@ -49,11 +49,29 @@ ambiente Blender quando ele não for o executável que iniciou a CLI.
 
 ## Testes e typecheck
 
+A suíte tem dois níveis:
+
+- **Rápido** (`-m "not integration"`): contrato de Spec, IR e validadores.
+  Roda em qualquer Python ≥ 3.11 sem `bpy` (prova mecânica em
+  `tests/test_suite_levels.py`); é o feedback de desenvolvimento.
+- **Integração** (`-m integration`): construção, renderização, exportação e
+  reimportação no ambiente oficial (Python 3.13 + `bpy` 5.2.2), com um teste
+  por estágio em `tests/test_pipeline_stages.py`.
+
 ```bash
 uv run pytest -m "not integration" # suíte rápida: contrato, IR e validadores
 uv run pytest -m integration       # obrigatório para release; requer bpy 5.2.2
 uv run mypy blender_worker
 ```
+
+**Gate de release:** nenhuma release é aprovada só com o nível rápido ou com
+artefatos fallback — exige o nível de integração verde no ambiente oficial
+(job `integration` em `.github/workflows/ci.yml`) e todos os baselines de
+`acceptance/` com `status: approved`.
+
+**Fora de escopo:** compatibilidade ampla com Pythons sem `bpy` não é parte
+do produto. O `requires-python = ">=3.11"` existe só para o nível rápido; o
+ambiente oficial é Python 3.13 + `bpy` 5.2.2 em Linux x86_64.
 
 ## Layout
 
