@@ -12,7 +12,12 @@ import binascii
 import json
 import math
 import os
+import platform
+import shutil
 import struct
+import tempfile
+import time
+import tracemalloc
 import zlib
 
 from . import generators  # noqa: F401  (registra os 4 geradores)
@@ -21,10 +26,14 @@ from .geometry.mesh import MeshData
 from .schema import AnySpec, load_spec_file, spec_to_dict
 from .style import get_style
 from .validators import check_glb, validate_before_export
+from .failures import FailureCode, structured_error
 
 
 class GenerateError(RuntimeError):
-    """Falha de validação: bloqueia a geração (motivo vai para o report)."""
+    """A structured pipeline failure."""
+    def __init__(self, message: str, code: FailureCode = FailureCode.VALIDATION_FAILED) -> None:
+        super().__init__(message)
+        self.code = code.value
 
 
 # ---------------------------------------------------------------- GLB
@@ -124,16 +133,27 @@ def _max_v(mesh: MeshData) -> tuple[float, float, float]:
 
 # ---------------------------------------------------------------- Preview (PNG puro-stdlib, 512px)
 
-SIZE = 512
+SIZE = 1024
 BG = (38, 40, 46)
 
 
 def _render_preview(mesh: MeshData, path: str, size: int = SIZE) -> None:
+    """Render the versioned four-view contact sheet used by the official profile."""
+    tile = size // 2
+    views = [_render_view(mesh, tile, angle) for angle in (30.0, 0.0, 90.0, 180.0)]
+    board = [[BG for _ in range(size)] for _ in range(size)]
+    for index, view in enumerate(views):
+        ox, oy = (index % 2) * tile, (index // 2) * tile
+        for y, row in enumerate(view): board[oy + y][ox:ox + tile] = row
+    _write_png(board, size, path)
+
+
+def _render_view(mesh: MeshData, size: int, angle_degrees: float) -> list:
     (x0, y0, z0), (x1, y1, z1) = mesh.bounds()
     span = max(x1 - x0, y1 - y0, z1 - z0, 1e-6)
     scale = (size * 0.72) / span
     cx, cy, czm = (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2
-    ang = math.radians(30.0)
+    ang = math.radians(angle_degrees)
 
     def proj(v: tuple[float, float, float]) -> tuple[float, float, float]:
         x, y, z = v[0] - cx, v[1] - cy, v[2] - czm
@@ -163,7 +183,7 @@ def _render_preview(mesh: MeshData, path: str, size: int = SIZE) -> None:
     for i in order_idx:
         (a, b2, c), _ = tris[i]
         _fill_tri(buf, size, sp[a], sp[b2], sp[c], shade(i))
-    _write_png(buf, size, path)
+    return buf
 
 
 def _fill_tri(buf: list, size: int, p0: tuple, p1: tuple, p2: tuple,
@@ -217,57 +237,95 @@ def bpy_available() -> bool:
     return True
 
 
-def generate(spec: AnySpec, out_dir: str) -> dict:
-    os.makedirs(out_dir, exist_ok=True)
+def inspect(spec: AnySpec) -> tuple[MeshData, dict]:
+    """Build and validate the IR without publishing an official result."""
     style = get_style(spec.style)
     gen_cls = get_generator(spec.type)
     mesh = gen_cls(spec, style).build()
-
     checks = validate_before_export(mesh, spec.type)
+    return mesh, checks
+
+
+def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
+    """Produce an atomic official Result of Generation using Blender."""
+    started = time.perf_counter(); tracemalloc.start()
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        raise GenerateError("plataforma oficial requer Linux x86_64", FailureCode.ENVIRONMENT_UNAVAILABLE)
+    if not bpy_available():
+        raise GenerateError("bpy 5.2.2 indisponível; use inspect() para a IR", FailureCode.ENVIRONMENT_UNAVAILABLE)
+    destination = os.path.abspath(out_dir); parent = os.path.dirname(destination)
+    os.makedirs(parent, exist_ok=True)
+    if os.path.exists(destination) and os.listdir(destination) and not force:
+        raise GenerateError("destino já contém um Resultado de Geração", FailureCode.PUBLICATION_FAILED)
+    stage = tempfile.mkdtemp(prefix=".generation-", dir=parent)
+    mesh, checks = inspect(spec)
     failed = {k: v for k, v in checks.items() if not v["ok"]}
     if failed:
-        report = _report(spec, mesh, checks, ok=False, renderer=_renderer())
-        _write_report(out_dir, report)
-        raise GenerateError(f"validação falhou: {list(failed)} — ver report.json")
-
-    if bpy_available():
-        try:
-            from .bpy_build import mesh_to_bpy
-
-            mesh_to_bpy(mesh, spec.type)
-        except Exception:
-            pass  # fallback puro-Python já validado acima
-
-    glb_path = os.path.join(out_dir, "model.glb")
-    _write_glb(mesh, glb_path)
-    checks["glb"] = check_glb(glb_path)
-    if not checks["glb"]["ok"]:
-        report = _report(spec, mesh, checks, ok=False, renderer=_renderer())
-        _write_report(out_dir, report)
-        raise GenerateError(f"GLB inválido: {checks['glb']['detail']}")
-
-    _render_preview(mesh, os.path.join(out_dir, "preview.png"))
-    report = _report(spec, mesh, checks, ok=True, renderer=_renderer())
-    _write_report(out_dir, report)
-    return report
+        shutil.rmtree(stage); raise GenerateError(f"validação falhou: {list(failed)}")
+    try:
+        import bpy  # type: ignore[import-not-found]
+        from .bpy_build import mesh_to_bpy
+        bpy.ops.wm.read_factory_settings(use_empty=True); mesh_to_bpy(mesh, spec.type)
+        glb_path = os.path.join(stage, "model.glb")
+        bpy.ops.export_scene.gltf(filepath=glb_path, export_format="GLB", export_yup=True)
+        checks["reimport"] = _reimport_gate(glb_path, len(set(mesh.face_materials)))
+        if not checks["reimport"]["ok"]: raise GenerateError(checks["reimport"]["detail"], FailureCode.REIMPORT_FAILED)
+        _render_preview(mesh, os.path.join(stage, "preview.png"))
+        _, peak = tracemalloc.get_traced_memory()
+        report = _report(spec, mesh, checks, ok=True, renderer="bpy", duration=time.perf_counter()-started, peak=peak)
+        _write_report(stage, report)
+        backup = destination + ".previous"
+        if os.path.exists(backup): shutil.rmtree(backup)
+        if os.path.exists(destination): os.replace(destination, backup)
+        os.replace(stage, destination)
+        if os.path.exists(backup): shutil.rmtree(backup)
+        return report
+    except Exception as error:
+        shutil.rmtree(stage, ignore_errors=True)
+        if isinstance(error, GenerateError): raise
+        raise GenerateError(str(error), FailureCode.BUILD_FAILED) from error
+    finally:
+        tracemalloc.stop()
 
 
 def _renderer() -> str:
     return "bpy" if bpy_available() else "fallback"
 
 
-def _report(spec: AnySpec, mesh: MeshData, checks: dict, ok: bool, renderer: str) -> dict:
+def _reimport_gate(path: str, material_count: int) -> dict:
+    import bpy  # type: ignore[import-not-found]
+    smoke = check_glb(path)
+    if not smoke["ok"]: return smoke
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    result = bpy.ops.import_scene.gltf(filepath=path)
+    meshes = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
+    ok = "FINISHED" in result and len(meshes) == 1 and len(meshes[0].data.materials) == material_count
+    return {"ok": ok, "detail": f"{len(meshes)} mesh, materiais preservados" if ok else "GLB reimportado não conformante"}
+
+
+def _report(spec: AnySpec, mesh: MeshData, checks: dict, ok: bool, renderer: str,
+            duration: float = 0.0, peak: int = 0) -> dict:
     return {
-        "ok": ok,
-        "renderer": renderer,
-        "spec": spec_to_dict(spec),
+        "schema_version": 1, "status": "success" if ok else "failure", "ok": ok,
+        "stage": "published" if ok else "validation", "backend": renderer, "renderer": renderer,
+        "environment": {"worker": "0.1.0", "blender": _blender_version(), "python": platform.python_version(),
+                        "render_profile": "medieval_lowpoly-v1"},
+        "resolved_spec": spec_to_dict(spec), "spec": spec_to_dict(spec),
         "tri_count": mesh.tri_count(),
         "verts": len(mesh.vertices),
         "faces": len(mesh.faces),
         "materials": [m.name for m in mesh.materials],
         "checks": checks,
-        "artifacts": ["model.glb", "preview.png", "report.json"],
+        "artifacts": ["model.glb", "preview.png", "report.json"] if ok else ["report.json"],
+        "error": None, "metrics": {"stages": {"total_seconds": duration}, "peak_memory_bytes": peak},
     }
+
+
+def _blender_version() -> str | None:
+    try:
+        import bpy  # type: ignore[import-not-found]
+        return bpy.app.version_string
+    except ImportError: return None
 
 
 def _write_report(out_dir: str, report: dict) -> None:
@@ -275,5 +333,27 @@ def _write_report(out_dir: str, report: dict) -> None:
         json.dump(report, f, indent=2, ensure_ascii=False)
 
 
-def generate_from_spec_file(spec_path: str, out_dir: str) -> dict:
-    return generate(load_spec_file(spec_path), out_dir)
+def generate_from_spec_file(spec_path: str, out_dir: str, *, force: bool = False) -> dict:
+    try:
+        return generate(load_spec_file(spec_path), out_dir, force=force)
+    except Exception as error:
+        # Never damage an existing result. For every other attempt, leave only
+        # the machine-readable report if its destination can be created.
+        occupied = os.path.isdir(out_dir) and bool(os.listdir(out_dir))
+        if not occupied:
+            try:
+                os.makedirs(out_dir, exist_ok=True)
+                code = FailureCode.INPUT_INVALID if error.__class__.__name__ == "SpecError" else FailureCode(
+                    getattr(error, "code", FailureCode.BUILD_FAILED.value)
+                )
+                report = {"schema_version": 1, "status": "failure", "ok": False, "stage": "input",
+                          "backend": "bpy" if bpy_available() else None,
+                          "environment": {"worker": "0.1.0", "blender": _blender_version(),
+                                          "python": platform.python_version(), "render_profile": "medieval_lowpoly-v1"},
+                          "resolved_spec": None, "checks": {}, "artifacts": ["report.json"],
+                          "error": structured_error(code, str(error)),
+                          "metrics": {"stages": {}, "peak_memory_bytes": 0}}
+                _write_report(out_dir, report)
+            except OSError:
+                pass
+        raise

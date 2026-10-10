@@ -26,20 +26,26 @@ class ChestGenerator(BaseGenerator[ChestSpec]):
         gold = b.mesh.add_material(metal_material(self.style, "gold", "lock_gold"))
 
         body_h = s.height * 0.65
-        b.box(0, 0, 0, s.width, s.depth, body_h, wood)
+        start = len(b.mesh.faces); b.box(0, 0, 0, s.width, s.depth, body_h, wood); b.mesh.mark_component("body", start)
         # Tampa
-        if s.lid_type == "flat":
+        start = len(b.mesh.faces)
+        if s.lid_form == "flat":
             b.box(0, 0, body_h, s.width, s.depth, s.height * 0.35, wood_dark)
         else:
             lid_h = s.height * 0.35
             self._arch_lid(b, s.width, s.depth, body_h, lid_h, wood_dark)
+        b.mesh.mark_component("lid", start)
         # Cintas metálicas
-        for i in range(s.bands):
-            t = (i + 1) / (s.bands + 1) - 0.5 if s.bands else 0.0
-            b.box(t * s.width * 0.8, 0, 0, 0.07, s.depth + 0.04, s.height, iron)
+        start = len(b.mesh.faces)
+        for i in range(s.band_count):
+            t = (i + 1) / (s.band_count + 1) - 0.5 if s.band_count else 0.0
+            b.box(t * s.width * 0.8, 0, 0, 0.07, s.depth, s.height, iron)
+        b.mesh.mark_component("bands", start)
         # Fechadura
-        if s.lock:
-            b.box(0, s.depth / 2, body_h - 0.05, 0.14, 0.06, 0.18, gold)
+        start = len(b.mesh.faces)
+        if s.has_lock:
+            b.box(0, s.depth / 2 - 0.03, body_h - 0.05, 0.14, 0.06, 0.18, gold)
+        b.mesh.mark_component("lock", start)
         return b.mesh
 
     def _arch_lid(self, b: MeshBuilder, w: float, d: float, z0: float,

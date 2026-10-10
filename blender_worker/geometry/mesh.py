@@ -15,12 +15,17 @@ class MaterialDef:
 
 @dataclass
 class MeshData:
-    """Malha com faces de 3 ou 4 vértices e um material por face."""
+    """Blender-independent IR with geometry, named components and an anchor."""
 
     vertices: list[tuple[float, float, float]] = field(default_factory=list)
     faces: list[tuple[int, ...]] = field(default_factory=list)
     face_materials: list[int] = field(default_factory=list)
     materials: list[MaterialDef] = field(default_factory=list)
+    components: dict[str, tuple[int, int]] = field(default_factory=dict)
+    anchor: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    def mark_component(self, name: str, start_face: int) -> None:
+        self.components[name] = (start_face, len(self.faces))
 
     def add_material(self, mat: MaterialDef) -> int:
         for i, m in enumerate(self.materials):

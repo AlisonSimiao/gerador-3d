@@ -15,6 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     g = sub.add_parser("generate", help="gera model.glb + preview.png + report.json")
     g.add_argument("--spec", required=True, help="spec JSON de entrada")
     g.add_argument("--out", required=True, help="diretório de saída")
+    g.add_argument("--force", action="store_true", help="substitui um Resultado de Geração existente")
     return p
 
 
@@ -22,9 +23,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.cmd == "generate":
         try:
-            report = generate_from_spec_file(args.spec, args.out)
+            report = generate_from_spec_file(args.spec, args.out, force=args.force)
         except (SpecError, GenerateError) as e:
-            print(f"erro: {e}", file=sys.stderr)
+            code = getattr(e, "code", "input.invalid" if isinstance(e, SpecError) else "build.failed")
+            print(f"{code}: {e}", file=sys.stderr)
             return 1
         print(f"ok: {report['tri_count']} tris -> {args.out}")
         return 0

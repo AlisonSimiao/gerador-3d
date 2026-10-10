@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from blender_worker.schema import SpecError, load_spec
+from blender_worker.schema import SpecError, json_schema_for, load_spec
 
 
 def test_house_default_spec_loads() -> None:
@@ -23,28 +23,50 @@ def test_all_example_specs_load() -> None:
 
 def test_unknown_type_rejected() -> None:
     with pytest.raises(SpecError):
-        load_spec({"type": "dragon", "seed": 1})
+        load_spec({"spec_version": 1, "type": "dragon", "seed": 1})
 
 
 def test_unknown_field_rejected() -> None:
     # Regra do plano: campos desconhecidos são rejeitados.
     with pytest.raises(SpecError):
-        load_spec({"type": "house", "seed": 1, "width": 6.0, "depth": 5.0,
-                   "floors": 1, "roof_type": "gable", "chimney": True,
-                   "windows": 4, "wall_material": "plaster",
+        load_spec({"spec_version": 1, "type": "house", "seed": 1, "width": 6.0, "depth": 5.0,
+                   "floors": 1, "roof_form": "gable", "has_chimney": True,
+                   "window_count": 4, "wall_finish": "plaster",
                    "style": "medieval_lowpoly", "torre_extra": 1})
 
 
 def test_out_of_range_rejected() -> None:
     with pytest.raises(SpecError):
-        load_spec({"type": "sword", "seed": 1, "blade_length": 99.0,
-                   "blade_width": 0.08, "guard_type": "straight",
-                   "grip_length": 0.15, "pommel": "round",
+        load_spec({"spec_version": 1, "type": "sword", "seed": 1, "blade_length": 99.0,
+                   "blade_width": 0.08, "guard_form": "straight",
+                   "grip_length": 0.15, "pommel_form": "round",
                    "style": "medieval_lowpoly"})
 
 
 def test_seed_required_and_deterministic() -> None:
     with pytest.raises(SpecError):
-        load_spec({"type": "tree", "trunk_height": 2.5, "trunk_radius": 0.25,
-                   "canopy_type": "cluster", "leaf_color": "green",
-                   "lean": 0.05, "style": "medieval_lowpoly"})
+        load_spec({"spec_version": 1, "type": "tree", "trunk_height": 2.5, "trunk_radius": 0.25,
+                   "canopy_form": "clustered", "foliage_palette": "green",
+                   "lean_degrees": 5.0, "style": "medieval_lowpoly"})
+
+
+@pytest.mark.parametrize("field,value", [("seed", 1.0), ("width", 6), ("has_chimney", 1)])
+def test_contract_does_not_coerce_json_types(field: str, value: object) -> None:
+    data = json.loads(open("specs/house_default.json").read())
+    data[field] = value
+    with pytest.raises(SpecError): load_spec(data)
+
+
+def test_spec_version_is_required_and_supported() -> None:
+    data = json.loads(open("specs/house_default.json").read()); del data["spec_version"]
+    with pytest.raises(SpecError): load_spec(data)
+    data["spec_version"] = 2
+    with pytest.raises(SpecError): load_spec(data)
+
+
+def test_generated_schema_has_the_same_fields_as_model() -> None:
+    for name in ("house", "sword", "tree", "chest"):
+        schema = json_schema_for(name)
+        example = json.loads(open(f"specs/{name}_default.json").read())
+        assert set(example) == set(schema["properties"])
+        assert schema["additionalProperties"] is False

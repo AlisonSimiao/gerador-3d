@@ -4,7 +4,7 @@ Geração procedural de assets 3D low-poly organizada por categorias.
 IA interpreta prompts → converte em parâmetros JSON → worker constrói os modelos.
 A IA **não** executa Python arbitrário: apenas preenche specs validadas.
 
-## Geradores (1 por categoria)
+## Tipos de Asset
 
 | Categoria | Gerador | Orçamento |
 |---|---|---|
@@ -13,13 +13,13 @@ A IA **não** executa Python arbitrário: apenas preenche specs validadas.
 | Natureza | `tree` | ≤ 5000 tris |
 | Objetos/móveis | `chest` | ≤ 2000 tris |
 
-## Ambiente
+## Ambiente oficial
 
 - `uv` (binário único, sem sudo) → venv Python **3.13** → `bpy==5.2.2`.
 - O wheel `bpy` exige CPython 3.13 (o Python 3.14 do sistema não é suportado).
-- Sem `bpy` (ex.: CI sem Blender), o worker usa o pipeline `fallback`
-  puro-Python com o mesmo contrato de artefatos; `report.json` registra
-  `"renderer": "fallback"` vs `"bpy"`.
+- Linux `x86_64` é a única plataforma oficial do Marco 1.
+- Sem `bpy`, somente a inspeção rápida da IR está disponível; ela nunca
+  publica `model.glb` ou `preview.png` e não constitui Resultado de Geração.
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -36,13 +36,16 @@ uv run python -m blender_worker generate \
   --out output/house_001
 ```
 
-Saída em `--out`: `model.glb`, `preview.png` (512px), `report.json`.
-Falha de validação → exit ≠ 0 + motivo no `report.json`.
+Saída atômica em `--out`: `model.glb`, prancha `preview.png` (1024 px) e
+`report.json`. Um destino ocupado falha sem alterações; use `--force` para
+substituí-lo atomicamente. Falhas produzem exit diferente de zero e, quando o
+destino puder ser criado, apenas um relatório com código estruturado.
 
 ## Testes e typecheck
 
 ```bash
-uv run pytest
+uv run pytest -m "not integration" # suíte rápida: contrato, IR e validadores
+uv run pytest -m integration       # obrigatório para release; requer bpy 5.2.2
 uv run mypy blender_worker
 ```
 

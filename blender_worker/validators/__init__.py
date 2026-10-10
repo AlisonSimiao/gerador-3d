@@ -7,14 +7,6 @@ from typing import Any
 
 from ..geometry.mesh import MeshData
 
-TRI_BUDGETS: dict[str, int] = {
-    "house": 8000,
-    "sword": 2000,
-    "tree": 5000,
-    "chest": 2000,
-}
-
-
 def _ok(ok: bool, detail: str = "") -> dict[str, Any]:
     return {"ok": ok, "detail": detail}
 
@@ -62,7 +54,8 @@ def check_mesh_valid(mesh: MeshData) -> dict[str, Any]:
 
 
 def check_tri_budget(mesh: MeshData, spec_type: str) -> dict[str, Any]:
-    budget = TRI_BUDGETS.get(spec_type, 2000)
+    from ..registry import get_descriptor
+    budget = get_descriptor(spec_type).triangle_budget
     n = mesh.tri_count()
     if n > budget:
         return _ok(False, f"{n} tris excede orçamento de {budget} para {spec_type}")
@@ -78,13 +71,18 @@ def check_materials(mesh: MeshData) -> dict[str, Any]:
     return _ok(True, f"{len(mesh.materials)} materiais, todas as faces cobertas")
 
 
-def check_transform(mesh: MeshData) -> dict[str, Any]:
-    """Origem na base-centro, escala em metros, rotação zerada (construção garante)."""
+def check_transform(mesh: MeshData, spec_type: str) -> dict[str, Any]:
+    """Validate the Type-specific Anchor at the origin and scale in metres."""
     if not mesh.vertices:
         return _ok(False, "malha vazia")
     (x0, y0, z0), (x1, y1, z1) = mesh.bounds()
-    if abs(z0) > 1e-6:
-        return _ok(False, f"base fora da origem (zmin={z0:.4f})")
+    if mesh.anchor != (0.0, 0.0, 0.0):
+        return _ok(False, f"Âncora fora da origem: {mesh.anchor}")
+    if spec_type == "sword":
+        if not z0 <= 0 <= z1:
+            return _ok(False, "centro da empunhadura não coincide com a origem")
+    elif abs(z0) > 1e-6:
+        return _ok(False, f"superfície de apoio fora da origem (zmin={z0:.4f})")
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     # Copas assimétricas (ex.: árvore) deslocam o centro; tolerar até 15% da extensão.
     tol_x = max(0.05, 0.15 * (x1 - x0))
@@ -94,7 +92,7 @@ def check_transform(mesh: MeshData) -> dict[str, Any]:
     size = max(x1 - x0, y1 - y0, z1 - z0)
     if not (0.05 <= size <= 60.0):
         return _ok(False, f"escala implausível ({size:.2f} m)")
-    return _ok(True, f"base-centro OK, extensão {size:.2f} m")
+    return _ok(True, f"Âncora OK, extensão {size:.2f} m")
 
 
 def check_glb(path: str) -> dict[str, Any]:
@@ -128,5 +126,5 @@ def validate_before_export(mesh: MeshData, spec_type: str) -> dict[str, dict[str
         "mesh_valid": check_mesh_valid(mesh),
         "tri_budget": check_tri_budget(mesh, spec_type),
         "materials": check_materials(mesh),
-        "transform": check_transform(mesh),
+        "anchor": check_transform(mesh, spec_type),
     }
