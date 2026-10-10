@@ -129,4 +129,3 @@ def test_canonical_house_passes_the_official_pipeline_within_budget(tmp_path: Pa
     assert report["resolved_spec"]["type"] == "house"
     assert report["tri_count"] <= get_descriptor("house").triangle_budget
     assert all(check["ok"] for check in report["checks"].values())
->>>>>>> origin/integration/marco1-adrs
