@@ -11,7 +11,7 @@ import subprocess
 import sys
 import uuid
 
-from .failures import FailureCode, structured_error
+from .failures import FailureCode, stage_for_code, structured_error
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
 
@@ -37,7 +37,7 @@ def _write_runner_failure(out_dir: Path, code: FailureCode, detail: str,
         "schema_version": 1,
         "status": "failure",
         "ok": False,
-        "stage": "environment",
+        "stage": stage_for_code(code),
         "backend": None,
         "environment": {"worker": "0.1.0", "blender": None, "python": None,
                         "process_id": os.getpid(),

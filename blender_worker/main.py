@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from .export import GenerateError, generate_from_spec_file
+from .failures import MESSAGES, FailureCode
 from .schema import SpecError
 
 
@@ -32,7 +33,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         except (SpecError, GenerateError) as e:
             code = getattr(e, "code", "input.invalid" if isinstance(e, SpecError) else "build.failed")
-            print(f"{code}: {e}", file=sys.stderr)
+            try:
+                message = MESSAGES[FailureCode(code)]
+            except ValueError:
+                message = str(e)
+            print(f"{code}: {message}", file=sys.stderr)
             return 1
         print(f"ok: {report['tri_count']} tris -> {args.out}")
         return 0
