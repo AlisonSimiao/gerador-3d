@@ -66,10 +66,18 @@ class HouseGenerator(BaseGenerator[HouseSpec]):
         # The finish changes facade structure, while all colors remain in Style.
         start = len(b.mesh.faces)
         if s.wall_finish == "timber":
-            b.box(0, s.depth / 2 + 0.03, 0, s.width, 0.06, 0.12, wood)
-            for x in (-s.width * .35, 0, s.width * .35): b.box(x, s.depth / 2 + .03, 0, .10, .06, wall_h, wood)
+            timber = st.timber_facade()
+            b.box(0, s.depth / 2 + timber.depth / 2, 0,
+                  s.width, timber.depth, timber.beam_height, wood)
+            for offset in timber.vertical_offsets:
+                b.box(s.width * offset, s.depth / 2 + timber.depth / 2, 0,
+                      timber.beam_width, timber.depth, wall_h, wood)
         elif s.wall_finish == "stone":
-            for z in (wall_h * .25, wall_h * .5, wall_h * .75): b.box(0, s.depth / 2 + .03, z, s.width, .05, .05, wood)
+            stone = st.stone_facade()
+            detail = b.material("stone_detail", stone.color, roughness=0.95)
+            for level in stone.course_levels:
+                b.box(0, s.depth / 2 + stone.depth / 2, wall_h * level,
+                      s.width, stone.depth, stone.course_height, detail)
         if len(b.mesh.faces) > start:
             b.mesh.mark_component("facade_details", start)
         return b.mesh

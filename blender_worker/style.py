@@ -7,7 +7,26 @@ dicionário de paleta, sem tocar nos geradores.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 Color = tuple[float, float, float, float]
+
+
+@dataclass(frozen=True)
+class TimberFacadeProfile:
+    color: Color
+    depth: float
+    beam_width: float
+    beam_height: float
+    vertical_offsets: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class StoneFacadeProfile:
+    color: Color
+    depth: float
+    course_height: float
+    course_levels: tuple[float, ...]
 
 
 class Style:
@@ -36,6 +55,26 @@ class Style:
     def wood(self, part: str = "default") -> Color:
         return self.color(f"wood_{part}" if f"wood_{part}" in self.palette else "wood")
 
+    def stone_detail(self) -> Color:
+        return self.color("stone_detail")
+
+    def timber_facade(self) -> TimberFacadeProfile:
+        return TimberFacadeProfile(
+            color=self.wood(),
+            depth=0.06,
+            beam_width=0.10,
+            beam_height=0.12,
+            vertical_offsets=(-0.35, 0.0, 0.35),
+        )
+
+    def stone_facade(self) -> StoneFacadeProfile:
+        return StoneFacadeProfile(
+            color=self.stone_detail(),
+            depth=0.05,
+            course_height=0.05,
+            course_levels=(0.25, 0.5, 0.75),
+        )
+
     def metal(self, part: str = "steel") -> Color:
         return self.color(f"metal_{part}" if f"metal_{part}" in self.palette else "metal")
 
@@ -58,6 +97,7 @@ MEDIEVAL_LOWPOLY: dict[str, Color] = {
     "wall_wood": (0.48, 0.33, 0.20, 1.0),
     "wall_stone": (0.55, 0.55, 0.58, 1.0),
     "wall_timber": (0.72, 0.62, 0.45, 1.0),
+    "stone_detail": (0.38, 0.39, 0.42, 1.0),
     "roof": (0.55, 0.22, 0.16, 1.0),
     "wood": (0.45, 0.30, 0.17, 1.0),
     "wood_dark": (0.32, 0.21, 0.12, 1.0),
