@@ -31,7 +31,8 @@ def _remove_attempt_staging(parent: Path, attempt_id: str) -> None:
             shutil.rmtree(path, ignore_errors=True)
 
 
-def _write_runner_failure(out_dir: Path, code: FailureCode, detail: str) -> dict:
+def _write_runner_failure(out_dir: Path, code: FailureCode, detail: str,
+                           stages: dict[str, float] | None = None, peak: int = 0) -> dict:
     report = {
         "schema_version": 1,
         "status": "failure",
@@ -39,12 +40,14 @@ def _write_runner_failure(out_dir: Path, code: FailureCode, detail: str) -> dict
         "stage": "environment",
         "backend": None,
         "environment": {"worker": "0.1.0", "blender": None, "python": None,
+                        "process_id": os.getpid(),
                         "render_profile": "medieval_lowpoly-v1"},
         "resolved_spec": None,
         "checks": {},
         "artifacts": ["report.json"],
         "error": structured_error(code, detail),
-        "metrics": {"stages": {}, "peak_memory_bytes": 0},
+        "metrics": {"stages": dict(stages) if stages else {"total_seconds": 0.0},
+                    "peak_memory_bytes": peak},
     }
     if not out_dir.exists() or not any(out_dir.iterdir()):
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -60,8 +63,9 @@ def run_generation_process(
     timeout_seconds: float | None = None,
 ) -> dict:
     """Run one official attempt in a new process and wait until it is reaped."""
-    from .export import GenerateError
+    from .export import GenerateError, _StageClock
 
+    clock = _StageClock()
     timeout = _timeout_seconds(timeout_seconds)
     destination = Path(out_dir).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -94,8 +98,11 @@ def run_generation_process(
             start_new_session=True,
         )
     except OSError as error:
+        stages, peak = clock.snapshot()
+        clock.stop()
         failure_report = _write_runner_failure(
-            destination, FailureCode.ENVIRONMENT_UNAVAILABLE, str(error)
+            destination, FailureCode.ENVIRONMENT_UNAVAILABLE, str(error),
+            stages=stages, peak=peak,
         )
         raise GenerateError(
             failure_report["error"]["detail"], FailureCode.ENVIRONMENT_UNAVAILABLE
@@ -107,24 +114,34 @@ def run_generation_process(
         process.communicate()
         _remove_attempt_staging(destination.parent, attempt_id)
         detail = f"processo Blender excedeu {timeout:g} segundos e foi encerrado"
-        failure_report = _write_runner_failure(destination, FailureCode.PROCESS_TIMEOUT, detail)
+        stages, peak = clock.snapshot()
+        clock.stop()
+        failure_report = _write_runner_failure(destination, FailureCode.PROCESS_TIMEOUT, detail,
+                                               stages=stages, peak=peak)
         raise GenerateError(
             failure_report["error"]["detail"], FailureCode.PROCESS_TIMEOUT
         ) from error
 
     report_path = destination / "report.json"
     report: dict | None = json.loads(report_path.read_text()) if report_path.is_file() else None
-    if process.returncode != 0:
-        if report is None:
-            detail = stderr.strip() or f"processo Blender terminou com status {process.returncode}"
-            report = _write_runner_failure(destination, FailureCode.ENVIRONMENT_UNAVAILABLE, detail)
-        try:
-            code = FailureCode(report["error"]["code"])
-        except (KeyError, ValueError):
-            code = FailureCode.BUILD_FAILED
-        raise GenerateError(str(report["error"]["detail"]), code)
-    if report is None or report.get("backend") != "bpy":
-        detail = "processo oficial terminou sem relatório produzido pelo backend bpy"
-        _write_runner_failure(destination, FailureCode.ENVIRONMENT_UNAVAILABLE, detail)
-        raise GenerateError(detail, FailureCode.ENVIRONMENT_UNAVAILABLE)
-    return report
+    try:
+        if process.returncode != 0:
+            if report is None:
+                detail = stderr.strip() or f"processo Blender terminou com status {process.returncode}"
+                stages, peak = clock.snapshot()
+                report = _write_runner_failure(destination, FailureCode.ENVIRONMENT_UNAVAILABLE, detail,
+                                               stages=stages, peak=peak)
+            try:
+                code = FailureCode(report["error"]["code"])
+            except (KeyError, ValueError):
+                code = FailureCode.BUILD_FAILED
+            raise GenerateError(str(report["error"]["detail"]), code)
+        if report is None or report.get("backend") != "bpy":
+            detail = "processo oficial terminou sem relatório produzido pelo backend bpy"
+            stages, peak = clock.snapshot()
+            _write_runner_failure(destination, FailureCode.ENVIRONMENT_UNAVAILABLE, detail,
+                                  stages=stages, peak=peak)
+            raise GenerateError(detail, FailureCode.ENVIRONMENT_UNAVAILABLE)
+        return report
+    finally:
+        clock.stop()
