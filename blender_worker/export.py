@@ -13,6 +13,7 @@ import tempfile
 import time
 import tracemalloc
 import zlib
+from typing import Any
 
 from . import generators  # noqa: F401  (registra os 4 geradores)
 from .registry import get_descriptor
@@ -163,6 +164,8 @@ def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
         from .bpy_build import mesh_to_bpy
         bpy.ops.wm.read_factory_settings(use_empty=True); mesh_to_bpy(mesh, spec.type)
         glb_path = os.path.join(stage, "model.glb")
+        # Explicit internal→glTF conversion: mesh_to_bpy rotated the IR
+        # into Blender space; export_yup=True + metric units emit +Y up / meters.
         bpy.ops.export_scene.gltf(filepath=glb_path, export_format="GLB", export_yup=True)
         checks["reimport"] = _reimport_gate(glb_path, len(set(mesh.face_materials)))
         if not checks["reimport"]["ok"]: raise GenerateError(checks["reimport"]["detail"], FailureCode.REIMPORT_FAILED)
@@ -188,15 +191,43 @@ def _renderer() -> str:
     return "bpy" if bpy_available() else "fallback"
 
 
+# glTF coordinate contract (ADR 0007): right-handed, +Y up, +Z front,
+# meters, Anchor at the origin. `mesh_to_bpy` already rotated the IR into
+# Blender space; `export_yup=True` + metric units finish the conversion.
+GLTF_COORDINATE_SYSTEM = {"handedness": "right", "up": "+Y", "front": "+Z", "unit": "meter"}
+
+
+def _identity_4x4(matrix: Any, tolerance: float = 1e-6) -> bool:
+    rows = [list(row) for row in matrix]
+    return all(
+        abs(value - (1.0 if row == col else 0.0)) < tolerance
+        for row, line in enumerate(rows)
+        for col, value in enumerate(line)
+    )
+
+
 def _reimport_gate(path: str, material_count: int) -> dict:
     import bpy  # type: ignore[import-not-found]
     smoke = check_glb(path)
-    if not smoke["ok"]: return smoke
+    if not smoke["ok"]:
+        return {**smoke, "mesh_count": 0, "root_nodes": 0,
+                "root_transform_identity": False,
+                "coordinate_system": dict(GLTF_COORDINATE_SYSTEM)}
     bpy.ops.wm.read_factory_settings(use_empty=True)
     result = bpy.ops.import_scene.gltf(filepath=path)
-    meshes = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
-    ok = "FINISHED" in result and len(meshes) == 1 and len(meshes[0].data.materials) == material_count
-    return {"ok": ok, "detail": f"{len(meshes)} mesh, materiais preservados" if ok else "GLB reimportado não conformante"}
+    bpy.context.view_layer.update()
+    objects = list(bpy.context.scene.objects)
+    roots = [obj for obj in objects if obj.parent is None]
+    meshes = [obj for obj in objects if obj.type == "MESH"]
+    materials_ok = len(meshes) == 1 and len(meshes[0].data.materials) == material_count
+    identity = len(meshes) == 1 and _identity_4x4(meshes[0].matrix_world)
+    ok = "FINISHED" in result and len(meshes) == 1 and len(roots) == 1 and materials_ok and identity
+    return {"ok": ok,
+            "detail": f"{len(meshes)} mesh, 1 nó raiz, materiais preservados" if ok
+                      else "GLB reimportado não conformante",
+            "mesh_count": len(meshes), "root_nodes": len(roots),
+            "root_transform_identity": identity,
+            "coordinate_system": dict(GLTF_COORDINATE_SYSTEM)}
 
 
 def _report(spec: AnySpec, mesh: MeshData, checks: dict, ok: bool, renderer: str,
