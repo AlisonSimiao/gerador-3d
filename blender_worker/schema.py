@@ -23,6 +23,10 @@ class BaseSpec:
     seed: int
     style: str
 
+    @classmethod
+    def relational_json_schema(cls) -> list[dict[str, Any]]:
+        return []
+
     def _common(self) -> None:
         if self.spec_version != self.SPEC_VERSION:
             raise SpecError(f"spec_version={self.spec_version!r} não suportada; esperado 1")
@@ -33,6 +37,7 @@ class BaseSpec:
 
 @dataclass(frozen=True)
 class HouseSpec(BaseSpec):
+    MIN_DEPTH_PER_FLOOR: ClassVar[float] = 1.5
     spec_version: Literal[1]
     type: Literal["house"]
     seed: int
@@ -45,8 +50,24 @@ class HouseSpec(BaseSpec):
     has_chimney: bool = True
     style: Literal["medieval_lowpoly"] = "medieval_lowpoly"
 
+    @classmethod
+    def relational_json_schema(cls) -> list[dict[str, Any]]:
+        return [
+            {
+                "if": {"properties": {"floors": {"const": 3}}, "required": ["floors"]},
+                "then": {
+                    "properties": {"depth": {"minimum": 3 * cls.MIN_DEPTH_PER_FLOOR}}
+                },
+            }
+        ]
+
     def __post_init__(self) -> None:
         self._common()
+        if self.depth < self.floors * self.MIN_DEPTH_PER_FLOOR:
+            raise SpecError(
+                f"depth={self.depth!r} insuficiente para {self.floors} pavimentos; "
+                f"mínimo {self.floors * self.MIN_DEPTH_PER_FLOOR:g}"
+            )
         if self.window_count > int((self.width + self.depth) * 1.6):
             raise SpecError("window_count não cabe nas fachadas declaradas")
 
@@ -175,13 +196,17 @@ def json_schema_for(spec_type: str) -> dict[str, Any]:
             required.append(field.name)
         else:
             prop["default"] = field.default
-    return {
+    schema: dict[str, Any] = {
         "title": cls.__name__,
         "type": "object",
         "additionalProperties": False,
         "properties": properties,
         "required": required,
     }
+    relational_constraints = cls.relational_json_schema()
+    if relational_constraints:
+        schema["allOf"] = relational_constraints
+    return schema
 
 
 def versioned_json_schema(spec_version: int) -> dict[str, Any]:

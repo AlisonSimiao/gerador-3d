@@ -21,6 +21,109 @@ def test_house_default_spec_loads() -> None:
     assert spec.type == "house"
 
 
+def test_house_depth_must_remain_proportional_to_its_floors() -> None:
+    data = json.loads(open("specs/house_default.json").read())
+    data.update({"depth": 3.0, "floors": 3})
+
+    with pytest.raises(SpecError, match="depth.*pavimentos"):
+        load_spec(data)
+
+
+def test_house_window_count_must_fit_its_facades() -> None:
+    data = json.loads(open("specs/house_default.json").read())
+    data.update({"width": 3.0, "depth": 3.0, "window_count": 10})
+
+    with pytest.raises(SpecError, match="window_count.*fachadas"):
+        load_spec(data)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("seed", -1),
+        ("seed", 4_294_967_296),
+        ("width", 2.99),
+        ("width", 12.01),
+        ("depth", 2.99),
+        ("depth", 10.01),
+        ("floors", 0),
+        ("floors", 4),
+        ("window_count", -1),
+        ("window_count", 17),
+    ],
+)
+def test_house_rejects_values_outside_v1_ranges(field: str, value: int | float) -> None:
+    data = json.loads(open("specs/house_default.json").read())
+    data[field] = value
+
+    with pytest.raises(SpecError, match=f"{field}=.*fora do intervalo"):
+        load_spec(data)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("seed", 0),
+        ("seed", 4_294_967_295),
+        ("width", 3.0),
+        ("width", 12.0),
+        ("depth", 3.0),
+        ("depth", 10.0),
+        ("floors", 1),
+        ("floors", 3),
+        ("window_count", 0),
+        ("window_count", 16),
+    ],
+)
+def test_house_accepts_v1_range_boundaries(field: str, value: int | float) -> None:
+    data = json.loads(open("specs/house_default.json").read())
+    data[field] = value
+
+    assert load_spec(data).type == "house"
+
+
+def test_house_public_schema_exposes_the_depth_floor_relation() -> None:
+    assert json_schema_for("house")["allOf"] == [
+        {
+            "if": {"properties": {"floors": {"const": 3}}, "required": ["floors"]},
+            "then": {"properties": {"depth": {"minimum": 4.5}}},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("old_field", "old_value"),
+    [
+        ("roof_type", "gable"),
+        ("wall_material", "plaster"),
+        ("windows", 4),
+        ("chimney", True),
+    ],
+)
+def test_house_rejects_fields_from_the_pre_v1_contract(
+    old_field: str, old_value: object
+) -> None:
+    data = json.loads(open("specs/house_default.json").read())
+    data[old_field] = old_value
+
+    with pytest.raises(SpecError, match="campos desconhecidos"):
+        load_spec(data)
+
+
+@pytest.mark.parametrize(
+    ("field", "old_value"),
+    [("roof_form", "shed"), ("wall_finish", "brick")],
+)
+def test_house_rejects_values_outside_the_v1_vocabulary(
+    field: str, old_value: str
+) -> None:
+    data = json.loads(open("specs/house_default.json").read())
+    data[field] = old_value
+
+    with pytest.raises(SpecError, match=f"{field}.*tipo JSON inválido"):
+        load_spec(data)
+
+
 def test_all_example_specs_load() -> None:
     for name in ("house_default", "sword_default", "tree_default", "chest_default"):
         with open(f"specs/{name}.json") as f:

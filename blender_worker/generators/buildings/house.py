@@ -40,8 +40,10 @@ class HouseGenerator(BaseGenerator[HouseSpec]):
         b.mesh.mark_component("roof", start)
         # Chaminé
         if s.has_chimney:
+            start = len(b.mesh.faces)
             chx = s.width * 0.28 * (1 if rng.random() < 0.5 else -1)
             b.box(chx, 0, wall_h + roof_h * 0.4, 0.5, 0.5, 1.4, wall)
+            b.mesh.mark_component("chimney", start)
         # Porta (face sul, centrada)
         start = len(b.mesh.faces); b.box(0, s.depth / 2, 0, 1.0, 0.12, 2.0, wood_dark); b.mesh.mark_component("door", start)
         # Janelas distribuídas nas 4 fachadas

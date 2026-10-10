@@ -4,7 +4,7 @@
 
 **Blocked by:** 03: Spec versionada, validação estrita e JSON Schema
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] Campos e valores antigos da Casa rejeitados; novos aceitos com defaults documentados
 - [ ] Faixas do ADR 0009 e relações entre campos validadas (janelas cabem nas fachadas; profundidade coerente com a altura por pavimento)
