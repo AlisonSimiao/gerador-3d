@@ -11,7 +11,7 @@ def _ok(ok: bool, detail: str = "") -> dict[str, Any]:
     return {"ok": ok, "detail": detail}
 
 
-def check_mesh_valid(mesh: MeshData) -> dict[str, Any]:
+def check_mesh_valid(mesh: MeshData, _spec_type: str = "") -> dict[str, Any]:
     """Sem faces degeneradas nem geometria não-manifold (checagem de arestas)."""
     if not mesh.faces:
         return _ok(False, "malha sem faces")
@@ -62,7 +62,7 @@ def check_tri_budget(mesh: MeshData, spec_type: str) -> dict[str, Any]:
     return _ok(True, f"{n}/{budget} tris")
 
 
-def check_materials(mesh: MeshData) -> dict[str, Any]:
+def check_materials(mesh: MeshData, _spec_type: str = "") -> dict[str, Any]:
     if not mesh.materials:
         return _ok(False, "nenhum material atribuído")
     for i, m in enumerate(mesh.face_materials):
@@ -122,9 +122,6 @@ def check_glb(path: str) -> dict[str, Any]:
 
 
 def validate_before_export(mesh: MeshData, spec_type: str) -> dict[str, dict[str, Any]]:
-    return {
-        "mesh_valid": check_mesh_valid(mesh),
-        "tri_budget": check_tri_budget(mesh, spec_type),
-        "materials": check_materials(mesh),
-        "anchor": check_transform(mesh, spec_type),
-    }
+    from ..registry import get_descriptor
+
+    return get_descriptor(spec_type).validate(mesh)
