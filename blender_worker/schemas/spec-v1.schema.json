@@ -90,6 +90,27 @@
         "spec_version",
         "type",
         "seed"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "floors": {
+                "const": 3
+              }
+            },
+            "required": [
+              "floors"
+            ]
+          },
+          "then": {
+            "properties": {
+              "depth": {
+                "minimum": 4.5
+              }
+            }
+          }
+        }
       ]
     },
     "sword": {

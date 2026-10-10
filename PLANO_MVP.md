@@ -29,10 +29,10 @@ Cada gerador recebe um JSON validado com parâmetros próprios. Exemplos:
 
 ```jsonc
 // house
-{ "type": "house", "seed": 42,
+{ "spec_version": 1, "type": "house", "seed": 42,
   "width": 6.0, "depth": 5.0, "floors": 1,
-  "roof_type": "gable", "chimney": true,
-  "windows": 4, "wall_material": "plaster", "style": "medieval_lowpoly" }
+  "roof_form": "gable", "has_chimney": true,
+  "window_count": 4, "wall_finish": "plaster", "style": "medieval_lowpoly" }
 
 // sword
 { "type": "sword", "seed": 7,
