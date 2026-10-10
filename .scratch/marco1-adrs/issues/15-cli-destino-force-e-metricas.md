@@ -4,7 +4,7 @@
 
 **Blocked by:** 14: Taxonomia versionada de falhas
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] Destino já com Resultado de Geração → falha com código de publicação; sem destruição do resultado existente
 - [ ] `--force` substitui com segurança, ainda com publicação atômica
