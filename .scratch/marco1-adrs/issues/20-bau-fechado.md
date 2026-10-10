@@ -4,7 +4,7 @@
 
 **Blocked by:** 17: Suíte de dois níveis e gate de release
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] Contrato v1 do Baú com campos, faixas e defaults do ADR 0009; campos antigos rejeitados
 - [ ] Envelope externo confere com as dimensões declaradas (tampa e cintas incluídas)
