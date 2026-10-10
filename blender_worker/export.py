@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import binascii
 import json
-import math
 import os
 import platform
 import shutil
@@ -12,7 +10,6 @@ import struct
 import tempfile
 import time
 import tracemalloc
-import zlib
 from typing import Any
 
 from . import generators  # noqa: F401  (registra os 4 geradores)
@@ -71,102 +68,6 @@ class _StageClock:
             self._owns_tracing = False
 
 
-# ---------------------------------------------------------------- Preview (PNG puro-stdlib, 512px)
-
-SIZE = 1024
-BG = (38, 40, 46)
-
-
-def _render_preview(mesh: MeshData, path: str, size: int = SIZE) -> None:
-    """Render the versioned four-view contact sheet used by the official profile."""
-    tile = size // 2
-    views = [_render_view(mesh, tile, angle) for angle in (30.0, 0.0, 90.0, 180.0)]
-    board = [[BG for _ in range(size)] for _ in range(size)]
-    for index, view in enumerate(views):
-        ox, oy = (index % 2) * tile, (index // 2) * tile
-        for y, row in enumerate(view): board[oy + y][ox:ox + tile] = row
-    _write_png(board, size, path)
-
-
-def _render_view(mesh: MeshData, size: int, angle_degrees: float) -> list:
-    (x0, y0, z0), (x1, y1, z1) = mesh.bounds()
-    span = max(x1 - x0, y1 - y0, z1 - z0, 1e-6)
-    scale = (size * 0.72) / span
-    cx, cy, czm = (x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2
-    ang = math.radians(angle_degrees)
-
-    def proj(v: tuple[float, float, float]) -> tuple[float, float, float]:
-        x, y, z = v[0] - cx, v[1] - cy, v[2] - czm
-        xr = x * math.cos(ang) - y * math.sin(ang)
-        yr = x * math.sin(ang) + y * math.cos(ang)
-        depth = yr  # pintor: menor yr = mais longe
-        sx = size / 2 + xr * scale
-        sy = size / 2 - (z * 0.95 + yr * 0.38) * scale
-        return (sx, sy, depth)
-
-    sp = [proj(v) for v in mesh.vertices]
-    buf = [[BG] * size for _ in range(size)]
-
-    tris = mesh.triangulated()
-
-    def shade(i: int) -> tuple[int, int, int]:
-        c = mesh.materials[tris[i][1]].color if mesh.materials else (0.8, 0.8, 0.8, 1.0)
-        # sombreamento fake pela altura média (topo mais claro)
-        pts = [sp[j] for j in tris[i][0]]
-        h = sum(p[1] for p in pts) / 3 / size  # 0..1 (y invertido)
-        k = 0.75 + 0.35 * (1 - h)
-        return (min(255, int(c[0] * 255 * k)),
-                min(255, int(c[1] * 255 * k)),
-                min(255, int(c[2] * 255 * k)))
-
-    order_idx = sorted(range(len(tris)), key=lambda i: sum(sp[j][2] for j in tris[i][0]) / 3)
-    for i in order_idx:
-        (a, b2, c), _ = tris[i]
-        _fill_tri(buf, size, sp[a], sp[b2], sp[c], shade(i))
-    return buf
-
-
-def _fill_tri(buf: list, size: int, p0: tuple, p1: tuple, p2: tuple,
-              color: tuple[int, int, int]) -> None:
-    xs = (p0[0], p1[0], p2[0])
-    ys = (p0[1], p1[1], p2[1])
-    x_min = max(0, int(min(xs)))
-    x_max = min(size - 1, int(max(xs)) + 1)
-    y_min = max(0, int(min(ys)))
-    y_max = min(size - 1, int(max(ys)) + 1)
-    if x_max < x_min or y_max < y_min:
-        return
-    (x0, y0), (x1, y1), (x2, y2) = (xs[0], ys[0]), (xs[1], ys[1]), (xs[2], ys[2])
-    den = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)
-    if abs(den) < 1e-9:
-        return
-    for y in range(y_min, y_max + 1):
-        for x in range(x_min, x_max + 1):
-            w1 = ((y1 - y2) * (x - x2) + (x2 - x1) * (y - y2)) / den
-            w2 = ((y2 - y0) * (x - x2) + (x0 - x2) * (y - y2)) / den
-            w3 = 1 - w1 - w2
-            if w1 >= -0.01 and w2 >= -0.01 and w3 >= -0.01:
-                buf[y][x] = color
-
-
-def _write_png(buf: list, size: int, path: str) -> None:
-    def chunk(ctype: bytes, payload: bytes) -> bytes:
-        c = ctype + payload
-        return struct.pack(">I", len(payload)) + c + struct.pack(">I", binascii.crc32(c))
-
-    raw = bytearray()
-    for y in range(size):
-        raw.append(0)
-        for x in range(size):
-            raw.extend(buf[y][x])
-    png = (b"\x89PNG\r\n\x1a\n"
-           + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
-           + chunk(b"IDAT", zlib.compress(bytes(raw), 6))
-           + chunk(b"IEND", b""))
-    with open(path, "wb") as f:
-        f.write(png)
-
-
 # ---------------------------------------------------------------- Orquestração
 
 def bpy_available() -> bool:
@@ -219,7 +120,8 @@ def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
             checks["reimport"] = _reimport_gate(glb_path, len(set(mesh.face_materials)))
             clock.lap("reimport")
             if not checks["reimport"]["ok"]: raise GenerateError(checks["reimport"]["detail"], FailureCode.REIMPORT_FAILED)
-            _render_preview(mesh, os.path.join(stage, "preview.png"))
+            from .preview import render_official_preview
+            checks["preview"] = render_official_preview(os.path.join(stage, "preview.png"))
             clock.lap("render")
             stages, peak = clock.snapshot()
             report = _report(spec, mesh, checks, ok=True, renderer="bpy", stages=stages, peak=peak)
