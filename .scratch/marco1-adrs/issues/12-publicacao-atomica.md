@@ -4,7 +4,7 @@
 
 **Blocked by:** 10: Preview oficial — prancha 1024 px e perfil de render versionado, 11: Gate de reimportação do Asset
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] Sucesso: destino contém `model.glb`, `preview.png` e `report.json` mutuamente consistentes (mesma Spec Resolvida)
 - [ ] Falha em qualquer etapa: destino contém somente `report.json`; nenhum Asset/Preview parcial
