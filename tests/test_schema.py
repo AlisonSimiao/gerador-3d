@@ -50,6 +50,14 @@ def test_out_of_range_rejected() -> None:
                    "style": "medieval_lowpoly"})
 
 
+def test_incompatible_style_is_rejected_by_the_type_descriptor() -> None:
+    data = json.loads(open("specs/house_default.json").read())
+    data["style"] = "photorealistic"
+
+    with pytest.raises(SpecError, match="incompatível com house"):
+        load_spec(data)
+
+
 def test_seed_required_and_deterministic() -> None:
     with pytest.raises(SpecError):
         load_spec({"spec_version": 1, "type": "tree", "trunk_height": 2.5, "trunk_radius": 0.25,

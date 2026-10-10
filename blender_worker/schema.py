@@ -26,8 +26,9 @@ class BaseSpec:
     def _common(self) -> None:
         if self.spec_version != self.SPEC_VERSION:
             raise SpecError(f"spec_version={self.spec_version!r} não suportada; esperado 1")
-        if self.style != "medieval_lowpoly":
-            raise SpecError("style incompatível; esperado 'medieval_lowpoly'")
+        from .registry import get_descriptor
+
+        get_descriptor(self.type).require_compatible_style(self.style)
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,9 @@ def load_spec(data: dict[str, Any]) -> AnySpec:
     registry = descriptors()
     descriptor = registry.get(spec_type) if type(spec_type) is str else None
     if descriptor is None: raise SpecError(f"type={spec_type!r} desconhecido; esperado um de {sorted(registry)}")
+    style = data.get("style")
+    if type(style) is str:
+        descriptor.require_compatible_style(style)
     cls = descriptor.spec_class
     known = {field.name for field in fields(cls)}
     unknown = set(data) - known
