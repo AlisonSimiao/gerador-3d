@@ -6,6 +6,7 @@ FAILURE_TAXONOMY_VERSION = 1
 class FailureCode(StrEnum):
     INPUT_INVALID = "input.invalid"
     ENVIRONMENT_UNAVAILABLE = "environment.unavailable"
+    PROCESS_TIMEOUT = "environment.timeout"
     BUILD_FAILED = "build.failed"
     VALIDATION_FAILED = "validation.failed"
     RENDER_FAILED = "render.failed"
@@ -15,6 +16,7 @@ class FailureCode(StrEnum):
 
 MESSAGES = {
     FailureCode.INPUT_INVALID: "A Spec é inválida.", FailureCode.ENVIRONMENT_UNAVAILABLE: "O ambiente oficial não está disponível.",
+    FailureCode.PROCESS_TIMEOUT: "O processo Blender excedeu o timeout.",
     FailureCode.BUILD_FAILED: "A construção da IR falhou.", FailureCode.VALIDATION_FAILED: "A validação falhou.",
     FailureCode.RENDER_FAILED: "A renderização falhou.", FailureCode.EXPORT_FAILED: "A exportação falhou.",
     FailureCode.REIMPORT_FAILED: "A reimportação falhou.", FailureCode.PUBLICATION_FAILED: "A publicação falhou.",

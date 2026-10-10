@@ -4,9 +4,26 @@
 
 **Blocked by:** 02: IR com componentes e Âncora
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Sem `bpy`: falha de ambiente explícita (exit ≠ 0, código estruturado), sem Asset/Preview publicados
-- [ ] Com `bpy`: cada Tentativa usa processo Blender limpo encerrado ao fim; duas Tentativas seguidas não se contaminam
-- [ ] Relatório registra o backend realmente utilizado e as versões do ambiente
-- [ ] Suíte rápida (sem `bpy`) cobre o caminho de inspeção da IR; caminho oficial coberto na suíte de integração
+- [x] Sem `bpy`: falha de ambiente explícita (exit ≠ 0, código estruturado), sem Asset/Preview publicados
+- [x] Com `bpy`: cada Tentativa usa processo Blender limpo encerrado ao fim; duas Tentativas seguidas não se contaminam
+- [x] Relatório registra o backend realmente utilizado e as versões do ambiente
+- [x] Suíte rápida (sem `bpy`) cobre o caminho de inspeção da IR; caminho oficial coberto na suíte de integração
+
+## Answer
+
+A geração oficial agora é orquestrada por um runner que cria um novo processo Python com `bpy`
+para cada Tentativa, espera e recolhe esse processo. O limite é configurável por CLI ou ambiente;
+no timeout, todo o grupo de processo é encerrado, o staging da Tentativa é descartado e uma falha
+`environment.timeout` é registrada. Ausência de `bpy` produz `environment.unavailable`, backend
+nulo e somente `report.json`. Relatórios de sucesso registram backend, versões e PID do processo
+isolado; `inspect()` permanece o único caminho puro-Python e não publica artefatos.
+
+## Comments
+
+- Contexto local: [runner oficial](../../../blender_worker/process_runner.py),
+  [entrada do processo filho](../../../blender_worker/generation_process.py) e
+  [testes do processo](../../../tests/test_process_runner.py). Verificação rápida: 46 testes;
+  integração oficial: geração de casa e duas gerações determinísticas em processos distintos;
+  `mypy blender_worker tests` verde.
