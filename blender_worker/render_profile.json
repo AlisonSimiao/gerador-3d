@@ -1,1 +1,21 @@
-{"schema_version":1,"name":"medieval_lowpoly-v1","size":1024,"views":["perspective","front","side","rear"],"background":[38,40,46],"color_management":"Standard"}
+{
+  "schema_version": 1,
+  "name": "medieval_lowpoly-v1",
+  "engine": "BLENDER_EEVEE",
+  "size": 1024,
+  "tile_size": 512,
+  "frame_factor": 1.45,
+  "perspective_lens_mm": 52,
+  "views": [
+    {"name": "perspective", "direction": [1.4, 1.6, 1.1], "distance_factor": 2.8, "projection": "PERSP"},
+    {"name": "front", "direction": [0, 1, 0], "distance_factor": 2.5, "projection": "ORTHO"},
+    {"name": "side", "direction": [1, 0, 0], "distance_factor": 2.5, "projection": "ORTHO"},
+    {"name": "rear", "direction": [0, -1, 0], "distance_factor": 2.5, "projection": "ORTHO"}
+  ],
+  "background": [38, 40, 46],
+  "color_management": {"view_transform": "Standard", "look": "None", "exposure": 0, "gamma": 1},
+  "lights": [
+    {"name": "key", "position": [1.5, 1.2, 2.0], "energy": 900, "size_factor": 1.5, "color": [1.0, 0.86, 0.72]},
+    {"name": "fill", "position": [-1.4, 0.5, 1.0], "energy": 500, "size_factor": 2.0, "color": [0.65, 0.78, 1.0]}
+  ]
+}

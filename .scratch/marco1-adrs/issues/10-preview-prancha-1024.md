@@ -4,7 +4,7 @@
 
 **Blocked by:** 08: Processo Blender limpo por Tentativa de Geração
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] `preview.png` oficial: 1024×1024, quatro vistas (principal em perspectiva + frontal, lateral, traseira), fundo neutro
 - [ ] Perfil de render do Estilo versionado no repositório e aplicado na geração (câmera, luz, fundo, color management)

@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import struct
 
 import pytest
 
@@ -28,6 +29,23 @@ def test_generate_produces_artifacts(tmp_path: Path, name: str) -> None:
     assert report["tri_count"] <= get_descriptor(report["spec"]["type"]).triangle_budget
     for check, result in report["checks"].items():
         assert result["ok"] is True, f"{name}:{check} falhou: {result.get('detail')}"
+
+
+def test_official_preview_uses_versioned_eevee_four_view_profile(tmp_path: Path) -> None:
+    out = tmp_path / "house-preview"
+
+    report = generate_from_spec_file("specs/house_default.json", str(out))
+
+    png = (out / "preview.png").read_bytes()
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert struct.unpack(">II", png[16:24]) == (1024, 1024)
+    assert report["checks"]["preview"] == {
+        "ok": True,
+        "detail": "4 vistas renderizadas com BLENDER_EEVEE",
+        "profile": "medieval_lowpoly-v1",
+        "views": ["perspective", "front", "side", "rear"],
+        "size": 1024,
+    }
 
 
 def test_generate_is_deterministic(tmp_path: Path) -> None:
