@@ -24,8 +24,7 @@ from . import generators  # noqa: F401  (registra os 4 geradores)
 from .registry import get_descriptor
 from .geometry.mesh import MeshData
 from .schema import AnySpec, load_spec_file, spec_to_dict
-from .style import get_style
-from .validators import check_glb, validate_before_export
+from .validators import check_glb
 from .failures import FailureCode, structured_error
 
 
@@ -239,14 +238,8 @@ def bpy_available() -> bool:
 
 def inspect(spec: AnySpec) -> tuple[MeshData, dict]:
     """Build and validate the IR without publishing an official result."""
-    style = get_style(spec.style)
     descriptor = get_descriptor(spec.type)
-    if spec.style not in descriptor.compatible_styles:
-        raise GenerateError("Estilo incompatível com o Tipo de Asset", FailureCode.INPUT_INVALID)
-    gen_cls = descriptor.generator
-    mesh = gen_cls(spec, style).build()
-    checks = validate_before_export(mesh, spec.type)
-    return mesh, checks
+    return descriptor.inspect(spec)
 
 
 def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
