@@ -347,6 +347,117 @@ def test_house_roof_form_by_wall_finish_matrix_is_green_within_budget(
         assert 0.05 in course_heights
 
 
+def test_house_same_seed_rebuilds_equivalent_geometry_and_materials() -> None:
+    """Mesma Spec + mesma Seed + mesmo ambiente → IR equivalente (ADR 0004)."""
+    descriptor = descriptors()["house"]
+    spec = load_spec(
+        {
+            "spec_version": 1,
+            "type": "house",
+            "seed": 7,
+            "roof_form": "hip",
+            "wall_finish": "timber",
+            "window_count": 8,
+            "floors": 2,
+        }
+    )
+
+    first, first_checks = descriptor.inspect(spec)
+    second, second_checks = descriptor.inspect(spec)
+
+    assert first.vertices == second.vertices
+    assert first.faces == second.faces
+    assert first.face_materials == second.face_materials
+    assert [(m.name, m.color) for m in first.materials] == [
+        (m.name, m.color) for m in second.materials
+    ]
+    assert first.components == second.components
+    assert all(check["ok"] for check in first_checks.values())
+    assert all(check["ok"] for check in second_checks.values())
+
+
+def test_house_distinct_seeds_vary_observably_but_stay_recognizable() -> None:
+    """Duas Seeds distintas: mesma Casa reconhecível, variação observável (ADR 0008)."""
+    descriptor = descriptors()["house"]
+
+    def house(seed: int):
+        return descriptor.inspect(
+            load_spec({"spec_version": 1, "type": "house", "seed": seed})
+        )[0]
+
+    first = house(7)
+    second = house(8)
+
+    # Variação observável: a geometria secundária (telhado/chaminé) difere.
+    assert first.vertices != second.vertices
+    assert (
+        first.component_bounds("roof") != second.component_bounds("roof")
+        or first.component_bounds("chimney") != second.component_bounds("chimney")
+    )
+
+    # Reconhecivelmente a mesma Casa: estrutura, opções e família de cores.
+    for mesh in (first, second):
+        assert mesh.component_bounds("body") == ((-3.0, -2.5, 0), (3.0, 2.5, 2.6))
+        assert set(mesh.components) == {"body", "roof", "chimney", "door", "windows"}
+        assert [m.name for m in mesh.materials] == [
+            "wall_plaster",
+            "roof",
+            "wood",
+            "wood_dark",
+            "glass",
+        ]
+        assert mesh.materials[0].color == (0.87, 0.82, 0.72, 1.0)
+        assert len(mesh.component_volume_bounds("windows")) == 4
+        assert len(mesh.component_volume_bounds("door")) == 1
+        assert mesh.components["roof"][1] - mesh.components["roof"][0] == 5
+        assert mesh.tri_count() == first.tri_count()
+
+
+HOUSE_SEED_SWEEP_MATRIX: list[dict[str, Any]] = [
+    {"roof_form": "gable", "wall_finish": "plaster"},
+    {"roof_form": "hip", "wall_finish": "timber"},
+    {"roof_form": "hip", "wall_finish": "stone", "floors": 3, "depth": 4.5},
+]
+
+
+@pytest.mark.parametrize("changes", HOUSE_SEED_SWEEP_MATRIX)
+def test_house_seed_varies_only_secondary_details(changes: dict[str, Any]) -> None:
+    """A Seed nunca contraria dimensões, opções, função ou família de cores (ADR 0008)."""
+    descriptor = descriptors()["house"]
+    wall_h = 2.6 * int(changes.get("floors", 1))
+    depth = float(changes.get("depth", 5.0))
+    expected_body = ((-3.0, -depth / 2, 0), (3.0, depth / 2, wall_h))
+    expected_roof_faces = 5 if changes["roof_form"] == "gable" else 12
+    expected_wall_color = {
+        "plaster": (0.87, 0.82, 0.72, 1.0),
+        "timber": (0.72, 0.62, 0.45, 1.0),
+        "stone": (0.55, 0.55, 0.58, 1.0),
+    }[str(changes["wall_finish"])]
+    expected_components = {"body", "roof", "chimney", "door", "windows"}
+    if changes["wall_finish"] != "plaster":
+        expected_components |= {"facade_details"}
+
+    for seed in range(20):
+        mesh, checks = descriptor.inspect(
+            load_spec(
+                {"spec_version": 1, "type": "house", "seed": seed, **changes}
+            )
+        )
+
+        assert all(check["ok"] for check in checks.values())
+        assert mesh.tri_count() <= descriptor.triangle_budget
+        assert mesh.component_bounds("body") == expected_body
+        assert set(mesh.components) == expected_components
+        assert mesh.materials[0].name == f"wall_{changes['wall_finish']}"
+        assert mesh.materials[0].color == expected_wall_color
+        assert len(mesh.component_volume_bounds("windows")) == 4
+        assert len(mesh.component_volume_bounds("door")) == 1
+        assert (
+            mesh.components["roof"][1] - mesh.components["roof"][0]
+            == expected_roof_faces
+        )
+
+
 def test_house_facade_details_follow_the_style_not_the_generator() -> None:
     """Nenhuma cor de fachada fixada no Gerador: tudo vem do Estilo (ADR 0004)."""
     from blender_worker.generators.base import get_generator
