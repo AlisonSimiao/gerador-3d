@@ -54,7 +54,10 @@ def render_official_preview(path: str) -> dict[str, Any]:
         data.shape = "DISK"
         data.size = span * light_profile["size_factor"]
         light = bpy.data.objects.new(light_profile["name"], data)
-        light.location = tuple(center[index] + span * light_profile["position"][index] for index in range(3))
+        light.location = tuple(
+            center[index] + span * light_profile["position"][index]
+            for index in range(3)
+        )
         scene.collection.objects.link(light)
         _point_at(light, center)
 

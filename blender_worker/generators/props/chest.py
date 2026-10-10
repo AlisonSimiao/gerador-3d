@@ -24,7 +24,9 @@ class ChestGenerator(BaseGenerator[ChestSpec]):
         gold = b.mesh.add_material(metal_material(self.style, "gold", "lock_gold"))
 
         body_h = s.height * 0.65
-        start = len(b.mesh.faces); b.box(0, 0, 0, s.width, s.depth, body_h, wood); b.mesh.mark_component("body", start)
+        start = len(b.mesh.faces)
+        b.box(0, 0, 0, s.width, s.depth, body_h, wood)
+        b.mesh.mark_component("body", start)
         # Tampa
         start = len(b.mesh.faces)
         if s.lid_form == "flat":
@@ -33,17 +35,27 @@ class ChestGenerator(BaseGenerator[ChestSpec]):
             lid_h = s.height * 0.35
             self._arch_lid(b, s.width, s.depth, body_h, lid_h, wood_dark)
         b.mesh.mark_component("lid", start)
-        # Cintas metálicas
+        # Cintas metálicas (largura e posição variam por seed, sem sair
+        # do envelope: meio-perfil da cinta mais larga cabe em width/2).
         start = len(b.mesh.faces)
         for i in range(s.band_count):
             t = (i + 1) / (s.band_count + 1) - 0.5 if s.band_count else 0.0
-            b.box(t * s.width * 0.8, 0, 0, 0.06 + rng.uniform(0, .02), s.depth, s.height, iron)
+            band_w = 0.05 + rng.uniform(0, 0.05)
+            band_x = t * s.width * 0.8 + rng.uniform(-0.02, 0.02) * s.width
+            b.box(band_x, 0, 0, band_w, s.depth, s.height, iron)
         if len(b.mesh.faces) > start:
             b.mesh.mark_component("bands", start)
-        # Fechadura
+        # Fechadura (tamanho e posição variam por seed; face frontal
+        # alinhada a depth/2 para nunca ultrapassar o envelope).
         start = len(b.mesh.faces)
         if s.has_lock:
-            b.box(0, s.depth / 2 - 0.03, body_h - 0.05, 0.14, 0.06, 0.18, gold)
+            lock_w = 0.12 + rng.uniform(0, 0.06)
+            lock_h = 0.16 + rng.uniform(0, 0.06)
+            lock_d = 0.05 + rng.uniform(0, 0.03)
+            lock_x = rng.uniform(-0.03, 0.03)
+            lock_z = body_h - 0.05 + rng.uniform(-0.02, 0.02)
+            b.box(lock_x, s.depth / 2 - lock_d / 2, lock_z - lock_h / 2,
+                  lock_w, lock_d, lock_h, gold)
         if len(b.mesh.faces) > start:
             b.mesh.mark_component("lock", start)
         return b.mesh

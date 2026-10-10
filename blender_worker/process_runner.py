@@ -12,6 +12,7 @@ import subprocess
 import sys
 import uuid
 
+from .export import AttemptMetrics, GenerateError, _StageClock
 from .failures import FailureCode, stage_for_code, structured_error
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
@@ -44,7 +45,8 @@ def _code_from_stderr(stderr: str) -> tuple[FailureCode, str] | None:
 
 
 def _write_runner_failure(out_dir: Path, code: FailureCode, detail: str,
-                           stages: dict[str, float] | None = None, peak: int = 0) -> dict:
+                            metrics: AttemptMetrics | None = None) -> dict:
+    measured = metrics if metrics is not None else AttemptMetrics()
     report = {
         "schema_version": 1,
         "status": "failure",
@@ -58,8 +60,9 @@ def _write_runner_failure(out_dir: Path, code: FailureCode, detail: str,
         "checks": {},
         "artifacts": ["report.json"],
         "error": structured_error(code, detail),
-        "metrics": {"stages": dict(stages) if stages else {"total_seconds": 0.0},
-                    "peak_memory_bytes": peak},
+        "metrics": {"stages": dict(measured.stages)
+                    if measured.stages else {"total_seconds": 0.0},
+                    "peak_memory_bytes": measured.peak_memory_bytes},
     }
     if not out_dir.exists() or not any(out_dir.iterdir()):
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -75,8 +78,6 @@ def run_generation_process(
     timeout_seconds: float | None = None,
 ) -> dict:
     """Run one official attempt in a new process and wait until it is reaped."""
-    from .export import GenerateError, _StageClock
-
     clock = _StageClock()
     timeout = _timeout_seconds(timeout_seconds)
     destination = Path(out_dir).resolve()
@@ -115,11 +116,11 @@ def run_generation_process(
             start_new_session=True,
         )
     except OSError as error:
-        stages, peak = clock.snapshot()
+        measured = clock.snapshot()
         clock.stop()
         failure_report = _write_runner_failure(
             destination, FailureCode.ENVIRONMENT_UNAVAILABLE, str(error),
-            stages=stages, peak=peak,
+            metrics=measured,
         )
         raise GenerateError(
             failure_report["error"]["detail"], FailureCode.ENVIRONMENT_UNAVAILABLE
@@ -131,10 +132,12 @@ def run_generation_process(
         process.communicate()
         _remove_attempt_staging(destination.parent, attempt_id)
         detail = f"processo Blender excedeu {timeout:g} segundos e foi encerrado"
-        stages, peak = clock.snapshot()
+        measured = clock.snapshot()
         clock.stop()
-        failure_report = _write_runner_failure(destination, FailureCode.PROCESS_TIMEOUT, detail,
-                                               stages=stages, peak=peak)
+        failure_report = _write_runner_failure(
+            destination, FailureCode.PROCESS_TIMEOUT, detail,
+            metrics=measured,
+        )
         raise GenerateError(
             failure_report["error"]["detail"], FailureCode.PROCESS_TIMEOUT
         ) from error
@@ -155,20 +158,30 @@ def run_generation_process(
                     code, detail = parsed
                 else:
                     code = FailureCode.ENVIRONMENT_UNAVAILABLE
-                    detail = stderr.strip() or f"processo Blender terminou com status {process.returncode}"
-                stages, peak = clock.snapshot()
-                report = _write_runner_failure(destination, code, detail,
-                                               stages=stages, peak=peak)
+                    detail = (
+                        stderr.strip()
+                        or "processo Blender terminou com status "
+                        f"{process.returncode}"
+                    )
+                measured = clock.snapshot()
+                report = _write_runner_failure(
+                    destination, code, detail, metrics=measured
+                )
             try:
                 code = FailureCode(report["error"]["code"])
             except (KeyError, ValueError):
                 code = FailureCode.BUILD_FAILED
             raise GenerateError(str(report["error"]["detail"]), code)
         if report is None or report.get("backend") != "bpy":
-            detail = "processo oficial terminou sem relatório produzido pelo backend bpy"
-            stages, peak = clock.snapshot()
-            _write_runner_failure(destination, FailureCode.ENVIRONMENT_UNAVAILABLE, detail,
-                                  stages=stages, peak=peak)
+            detail = (
+                "processo oficial terminou sem relatório "
+                "produzido pelo backend bpy"
+            )
+            measured = clock.snapshot()
+            _write_runner_failure(
+                destination, FailureCode.ENVIRONMENT_UNAVAILABLE, detail,
+                metrics=measured,
+            )
             raise GenerateError(detail, FailureCode.ENVIRONMENT_UNAVAILABLE)
         return report
     finally:
