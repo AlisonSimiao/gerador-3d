@@ -21,6 +21,10 @@ def test_generate_produces_artifacts(tmp_path: Path, name: str) -> None:
     assert (out / "preview.png").exists()
     assert (out / "report.json").exists()
     assert report["tri_count"] > 0
+    assert report["backend"] == "bpy"
+    assert report["environment"]["blender"]
+    assert report["environment"]["python"]
+    assert report["environment"]["process_id"]
     assert report["tri_count"] <= get_descriptor(report["spec"]["type"]).triangle_budget
     for check, result in report["checks"].items():
         assert result["ok"] is True, f"{name}:{check} falhou: {result.get('detail')}"
@@ -30,6 +34,7 @@ def test_generate_is_deterministic(tmp_path: Path) -> None:
     r1 = generate_from_spec_file("specs/tree_default.json", str(tmp_path / "a"))
     r2 = generate_from_spec_file("specs/tree_default.json", str(tmp_path / "b"))
     assert r1["tri_count"] == r2["tri_count"]
+    assert r1["environment"]["process_id"] != r2["environment"]["process_id"]
     glb_a = (tmp_path / "a" / "model.glb").read_bytes()
     glb_b = (tmp_path / "b" / "model.glb").read_bytes()
     assert glb_a == glb_b
