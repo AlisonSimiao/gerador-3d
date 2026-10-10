@@ -1,10 +1,17 @@
 """Seam 1: validação de spec JSON (contrato por tipo, PLANO_MVP §3)."""
 
 import json
+from importlib.resources import files
 
 import pytest
 
-from blender_worker.schema import SpecError, json_schema_for, load_spec
+from blender_worker.schema import (
+    SpecError,
+    json_schema_for,
+    load_spec,
+    spec_to_dict,
+    versioned_json_schema,
+)
 
 
 def test_house_default_spec_loads() -> None:
@@ -57,6 +64,15 @@ def test_contract_does_not_coerce_json_types(field: str, value: object) -> None:
     with pytest.raises(SpecError): load_spec(data)
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_contract_rejects_non_finite_numbers(value: float) -> None:
+    data = json.loads(open("specs/house_default.json").read())
+    data["width"] = value
+
+    with pytest.raises(SpecError):
+        load_spec(data)
+
+
 def test_spec_version_is_required_and_supported() -> None:
     data = json.loads(open("specs/house_default.json").read()); del data["spec_version"]
     with pytest.raises(SpecError): load_spec(data)
@@ -64,9 +80,50 @@ def test_spec_version_is_required_and_supported() -> None:
     with pytest.raises(SpecError): load_spec(data)
 
 
-def test_generated_schema_has_the_same_fields_as_model() -> None:
+def test_distributed_v1_schema_equals_runtime_contract() -> None:
+    schema_path = files("blender_worker").joinpath("schemas/spec-v1.schema.json")
+    distributed = json.loads(schema_path.read_text(encoding="utf-8"))
+
+    assert distributed == versioned_json_schema(1)
+
+
+def test_generated_schema_carries_types_enums_defaults_and_limits() -> None:
     for name in ("house", "sword", "tree", "chest"):
         schema = json_schema_for(name)
         example = json.loads(open(f"specs/{name}_default.json").read())
         assert set(example) == set(schema["properties"])
         assert schema["additionalProperties"] is False
+
+    house = json_schema_for("house")
+    assert house["properties"]["spec_version"] == {"const": 1, "type": "integer"}
+    assert house["properties"]["type"] == {"const": "house", "type": "string"}
+    assert house["properties"]["roof_form"] == {
+        "default": "gable",
+        "enum": ["gable", "hip"],
+        "type": "string",
+    }
+    assert house["properties"]["width"] == {
+        "default": 6.0,
+        "maximum": 12,
+        "minimum": 3,
+        "type": "number",
+    }
+    assert house["required"] == ["spec_version", "type", "seed"]
+
+
+def test_defaults_are_explicit_in_resolved_spec() -> None:
+    resolved = load_spec({"spec_version": 1, "type": "house", "seed": 42})
+
+    assert spec_to_dict(resolved) == {
+        "spec_version": 1,
+        "type": "house",
+        "seed": 42,
+        "width": 6.0,
+        "depth": 5.0,
+        "floors": 1,
+        "roof_form": "gable",
+        "wall_finish": "plaster",
+        "window_count": 4,
+        "has_chimney": True,
+        "style": "medieval_lowpoly",
+    }

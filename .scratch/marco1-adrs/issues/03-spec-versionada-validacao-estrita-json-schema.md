@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] `spec_version` aceita e registrada; versões ausentes ou não suportadas rejeitadas
 - [ ] Rejeição sem coerção: tipo JSON errado, NaN/Infinity, campos desconhecidos, faixas violadas
