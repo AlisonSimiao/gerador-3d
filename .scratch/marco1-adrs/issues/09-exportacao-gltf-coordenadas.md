@@ -4,7 +4,7 @@
 
 **Blocked by:** 08: Processo Blender limpo por Tentativa de Geração
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] `model.glb` do Resultado oficial produzido pelo exportador Blender, não pelo antigo escritor puro-Python
 - [ ] Após reimportação manual: `+Y` para cima, `+Z` frente, escala em metros, Âncora na origem

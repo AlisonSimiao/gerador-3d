@@ -1,10 +1,4 @@
-"""Export: GLB + preview.png + report.json — PLANO_MVP §7.
-
-Pipeline puro-Python (determinístico, testável sem Blender). Quando `bpy`
-está disponível, os objetos Blender são construídos via `bpy_build`
-antes do export para fidelidade de cena; o GLB/preview seguem o mesmo
-contrato de artefatos.
-"""
+"""Official Blender export plus the temporary preview/report orchestration."""
 
 from __future__ import annotations
 
@@ -33,101 +27,6 @@ class GenerateError(RuntimeError):
     def __init__(self, message: str, code: FailureCode = FailureCode.VALIDATION_FAILED) -> None:
         super().__init__(message)
         self.code = code.value
-
-
-# ---------------------------------------------------------------- GLB
-
-def _write_glb(mesh: MeshData, path: str) -> None:
-    tris = mesh.triangulated()
-    positions: list[float] = []
-    for v in mesh.vertices:
-        positions.extend([float(v[0]), float(v[1]), float(v[2])])
-    pos_bytes = struct.pack(f"<{len(positions)}f", *positions)
-
-    # Um primitive por grupo de material (glTF: 1 material por primitive).
-    order: list[int] = []
-    groups: dict[int, list[tuple[int, int, int]]] = {}
-    for tri, mat in tris:
-        if mat not in groups:
-            groups[mat] = []
-            order.append(mat)
-        groups[mat].append(tri)
-
-    use32 = len(mesh.vertices) > 65535
-    idx_fmt = "I" if use32 else "H"
-    idx_ctype = 5125 if use32 else 5123
-
-    bin_blob = bytearray(pos_bytes)
-    while len(bin_blob) % 4:
-        bin_blob.append(0)
-    buffer_views: list[dict] = [
-        {"buffer": 0, "byteOffset": 0, "byteLength": len(pos_bytes), "target": 34962}
-    ]
-    accessors: list[dict] = [
-        {"bufferView": 0, "componentType": 5126, "count": len(mesh.vertices),
-         "type": "VEC3", "min": list(map(float, _min_v(mesh))),
-         "max": list(map(float, _max_v(mesh)))}
-    ]
-    primitives: list[dict] = []
-    for mat in order:
-        idx: list[int] = []
-        for t in groups[mat]:
-            idx.extend(t)
-        raw = struct.pack(f"<{len(idx)}{idx_fmt}", *idx)
-        off = len(bin_blob)
-        bin_blob.extend(raw)
-        while len(bin_blob) % 4:
-            bin_blob.append(0)
-        buffer_views.append(
-            {"buffer": 0, "byteOffset": off, "byteLength": len(raw), "target": 34963}
-        )
-        acc_idx = len(accessors)
-        accessors.append({"bufferView": len(buffer_views) - 1, "componentType": idx_ctype,
-                          "count": len(idx), "type": "SCALAR"})
-        primitives.append({"attributes": {"POSITION": 0}, "indices": acc_idx,
-                           "material": order.index(mat), "mode": 4})
-
-    materials = []
-    for m in mesh.materials:
-        materials.append({
-            "name": m.name,
-            "pbrMetallicRoughness": {
-                "baseColorFactor": list(m.color),
-                "metallicFactor": m.metallic,
-                "roughnessFactor": m.roughness,
-            },
-        })
-    doc = {
-        "asset": {"version": "2.0", "generator": "gerador-3d-marco1"},
-        "scene": 0,
-        "scenes": [{"nodes": [0]}],
-        "nodes": [{"mesh": 0, "name": "asset"}],
-        "meshes": [{"name": "asset", "primitives": primitives}],
-        "materials": materials,
-        "accessors": accessors,
-        "bufferViews": buffer_views,
-        "buffers": [{"byteLength": len(bin_blob)}],
-    }
-    json_bytes = json.dumps(doc, separators=(",", ":")).encode("utf-8")
-    while len(json_bytes) % 4:
-        json_bytes += b" "
-    total = 12 + 8 + len(json_bytes) + 8 + len(bin_blob)
-    with open(path, "wb") as f:
-        f.write(b"glTF" + struct.pack("<II", 2, total))
-        f.write(struct.pack("<II", len(json_bytes), 0x4E4F534A))
-        f.write(json_bytes)
-        f.write(struct.pack("<II", len(bin_blob), 0x004E4942))
-        f.write(bin_blob)
-
-
-def _min_v(mesh: MeshData) -> tuple[float, float, float]:
-    b, _ = mesh.bounds()
-    return b
-
-
-def _max_v(mesh: MeshData) -> tuple[float, float, float]:
-    _, t = mesh.bounds()
-    return t
 
 
 # ---------------------------------------------------------------- Preview (PNG puro-stdlib, 512px)

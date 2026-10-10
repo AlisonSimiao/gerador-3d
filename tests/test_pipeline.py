@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import struct
 
 import pytest
 
@@ -10,6 +11,13 @@ from blender_worker.registry import get_descriptor
 
 SPECS = ["house_default", "sword_default", "tree_default", "chest_default"]
 pytestmark = pytest.mark.integration
+
+
+def _glb_document(path: Path) -> dict:
+    data = path.read_bytes()
+    json_length, json_type = struct.unpack("<II", data[12:20])
+    assert json_type == 0x4E4F534A
+    return json.loads(data[20:20 + json_length])
 
 
 @pytest.mark.parametrize("name", SPECS)
@@ -68,3 +76,45 @@ def test_report_records_the_fully_resolved_spec(tmp_path: Path) -> None:
         "has_chimney": True,
         "style": "medieval_lowpoly",
     }
+
+
+def test_official_glb_has_blender_provenance_and_the_coordinate_contract(tmp_path: Path) -> None:
+    out = tmp_path / "house"
+    report = generate_from_spec_file("specs/house_default.json", str(out))
+
+    document = _glb_document(out / "model.glb")
+
+    assert "Blender" in document["asset"]["generator"]
+    assert document["scenes"][document["scene"]]["nodes"] == [0]
+    assert len(document["nodes"]) == 1
+    root = document["nodes"][0]
+    assert root["mesh"] == 0
+    assert not ({"translation", "rotation", "scale"} & root.keys())
+    assert len(document["meshes"]) == 1
+
+    primitives = document["meshes"][0]["primitives"]
+    material_names = {
+        document["materials"][primitive["material"]]["name"] for primitive in primitives
+    }
+    assert material_names == {"wall_plaster", "roof", "wood_dark", "glass"}
+
+    position_bounds = [
+        document["accessors"][primitive["attributes"]["POSITION"]] for primitive in primitives
+    ]
+    assert min(bounds["min"][1] for bounds in position_bounds) == pytest.approx(0.0)
+    assert max(bounds["max"][1] for bounds in position_bounds) < 10.0
+    door = next(
+        primitive for primitive in primitives
+        if document["materials"][primitive["material"]]["name"] == "wood_dark"
+    )
+    door_bounds = document["accessors"][door["attributes"]["POSITION"]]
+    assert door_bounds["min"][2] > 0.0, "a fachada frontal deve apontar para +Z"
+    assert report["checks"]["reimport"]["coordinate_system"] == {
+        "handedness": "right",
+        "up": "+Y",
+        "front": "+Z",
+        "unit": "meter",
+    }
+    assert report["checks"]["reimport"]["root_nodes"] == 1
+    assert report["checks"]["reimport"]["mesh_count"] == 1
+    assert report["checks"]["reimport"]["root_transform_identity"] is True
