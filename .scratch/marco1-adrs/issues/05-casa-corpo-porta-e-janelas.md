@@ -4,7 +4,7 @@
 
 **Blocked by:** 02: IR com componentes e Âncora, 04: Contrato v1 da Casa
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] Extensão do corpo da malha confere com as dimensões declaradas da Spec Resolvida (tolerância de exportação)
 - [ ] Porta sempre presente como componente visual; `window_count` distribuído deterministicamente — mesma Seed, mesma distribuição

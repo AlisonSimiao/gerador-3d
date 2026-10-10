@@ -63,3 +63,14 @@ def test_report_records_the_fully_resolved_spec(tmp_path: Path) -> None:
         "has_chimney": True,
         "style": "medieval_lowpoly",
     }
+
+
+def test_canonical_house_passes_the_official_pipeline_within_budget(tmp_path: Path) -> None:
+    report = generate_from_spec_file(
+        "acceptance/house/canonical.json", str(tmp_path / "canonical-house")
+    )
+
+    assert report["status"] == "success"
+    assert report["resolved_spec"]["type"] == "house"
+    assert report["tri_count"] <= get_descriptor("house").triangle_budget
+    assert all(check["ok"] for check in report["checks"].values())
