@@ -24,3 +24,36 @@ MESSAGES = {
 
 def structured_error(code: FailureCode, detail: str) -> dict[str, str | int]:
     return {"taxonomy_version": FAILURE_TAXONOMY_VERSION, "code": code.value, "message": MESSAGES[code], "detail": detail}
+
+
+#: Stable `stage` vocabulary of the versioned validation report (ADR 0007):
+#: the furthest pipeline step an attempt reached. Only a successful attempt
+#: that published its Result of Generation reports "published".
+REPORT_STAGES: tuple[str, ...] = (
+    "input",
+    "environment",
+    "build",
+    "validation",
+    "render",
+    "export",
+    "reimport",
+    "publication",
+    "published",
+)
+
+_CODE_TO_STAGE: dict[FailureCode, str] = {
+    FailureCode.INPUT_INVALID: "input",
+    FailureCode.ENVIRONMENT_UNAVAILABLE: "environment",
+    FailureCode.PROCESS_TIMEOUT: "environment",
+    FailureCode.BUILD_FAILED: "build",
+    FailureCode.VALIDATION_FAILED: "validation",
+    FailureCode.RENDER_FAILED: "render",
+    FailureCode.EXPORT_FAILED: "export",
+    FailureCode.REIMPORT_FAILED: "reimport",
+    FailureCode.PUBLICATION_FAILED: "publication",
+}
+
+
+def stage_for_code(code: FailureCode) -> str:
+    """Map a failure code to the documented report stage it stopped at."""
+    return _CODE_TO_STAGE[code]

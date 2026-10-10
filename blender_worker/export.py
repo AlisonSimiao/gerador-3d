@@ -25,14 +25,55 @@ from .registry import get_descriptor
 from .geometry.mesh import MeshData
 from .schema import AnySpec, load_spec_file, spec_to_dict
 from .validators import check_glb
-from .failures import FailureCode, structured_error
+from .failures import FailureCode, stage_for_code, structured_error
 
 
 class GenerateError(RuntimeError):
     """A structured pipeline failure."""
-    def __init__(self, message: str, code: FailureCode = FailureCode.VALIDATION_FAILED) -> None:
+    def __init__(self, message: str, code: FailureCode = FailureCode.VALIDATION_FAILED,
+                 *, stages: dict[str, float] | None = None, peak: int | None = None) -> None:
         super().__init__(message)
         self.code = code.value
+        self.stages = dict(stages) if stages else {}
+        self.peak = peak
+
+
+class _StageClock:
+    """Wall-time laps plus approximate peak memory for one attempt.
+
+    Every report carries the resulting metrics: per-stage durations where
+    the attempt got far enough to record them, always `total_seconds`, and
+    the tracemalloc peak — on success and failure paths alike.
+    """
+    def __init__(self) -> None:
+        self._start = time.perf_counter()
+        self._mark = self._start
+        self._laps: dict[str, float] = {}
+        self._owns_tracing = not tracemalloc.is_tracing()
+        if self._owns_tracing:
+            tracemalloc.start()
+
+    def lap(self, name: str) -> float:
+        now = time.perf_counter()
+        elapsed = now - self._mark
+        self._mark = now
+        self._laps[name] = elapsed
+        return elapsed
+
+    @property
+    def laps(self) -> dict[str, float]:
+        return dict(self._laps)
+
+    def snapshot(self) -> tuple[dict[str, float], int]:
+        stages = dict(self._laps)
+        stages["total_seconds"] = time.perf_counter() - self._start
+        _, peak = tracemalloc.get_traced_memory()
+        return stages, peak
+
+    def stop(self) -> None:
+        if self._owns_tracing:
+            tracemalloc.stop()
+            self._owns_tracing = False
 
 
 # ---------------------------------------------------------------- GLB
@@ -244,45 +285,63 @@ def inspect(spec: AnySpec) -> tuple[MeshData, dict]:
 
 def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
     """Produce an atomic official Result of Generation using Blender."""
-    started = time.perf_counter(); tracemalloc.start()
-    if platform.system() != "Linux" or platform.machine() != "x86_64":
-        raise GenerateError("plataforma oficial requer Linux x86_64", FailureCode.ENVIRONMENT_UNAVAILABLE)
-    if not bpy_available():
-        raise GenerateError("bpy 5.2.2 indisponível; use inspect() para a IR", FailureCode.ENVIRONMENT_UNAVAILABLE)
-    destination = os.path.abspath(out_dir); parent = os.path.dirname(destination)
-    os.makedirs(parent, exist_ok=True)
-    if os.path.exists(destination) and os.listdir(destination) and not force:
-        raise GenerateError("destino já contém um Resultado de Geração", FailureCode.PUBLICATION_FAILED)
-    attempt_id = os.environ.get("GERADOR_3D_ATTEMPT_ID", "local")
-    stage = tempfile.mkdtemp(prefix=f".generation-{attempt_id}-", dir=parent)
-    mesh, checks = inspect(spec)
-    failed = {k: v for k, v in checks.items() if not v["ok"]}
-    if failed:
-        shutil.rmtree(stage); raise GenerateError(f"validação falhou: {list(failed)}")
+    clock = _StageClock()
     try:
-        import bpy  # type: ignore[import-not-found]
-        from .bpy_build import mesh_to_bpy
-        bpy.ops.wm.read_factory_settings(use_empty=True); mesh_to_bpy(mesh, spec.type)
-        glb_path = os.path.join(stage, "model.glb")
-        bpy.ops.export_scene.gltf(filepath=glb_path, export_format="GLB", export_yup=True)
-        checks["reimport"] = _reimport_gate(glb_path, len(set(mesh.face_materials)))
-        if not checks["reimport"]["ok"]: raise GenerateError(checks["reimport"]["detail"], FailureCode.REIMPORT_FAILED)
-        _render_preview(mesh, os.path.join(stage, "preview.png"))
-        _, peak = tracemalloc.get_traced_memory()
-        report = _report(spec, mesh, checks, ok=True, renderer="bpy", duration=time.perf_counter()-started, peak=peak)
-        _write_report(stage, report)
-        backup = destination + ".previous"
-        if os.path.exists(backup): shutil.rmtree(backup)
-        if os.path.exists(destination): os.replace(destination, backup)
-        os.replace(stage, destination)
-        if os.path.exists(backup): shutil.rmtree(backup)
-        return report
-    except Exception as error:
-        shutil.rmtree(stage, ignore_errors=True)
-        if isinstance(error, GenerateError): raise
-        raise GenerateError(str(error), FailureCode.BUILD_FAILED) from error
+        if platform.system() != "Linux" or platform.machine() != "x86_64":
+            raise GenerateError("plataforma oficial requer Linux x86_64", FailureCode.ENVIRONMENT_UNAVAILABLE)
+        if not bpy_available():
+            raise GenerateError("bpy 5.2.2 indisponível; use inspect() para a IR", FailureCode.ENVIRONMENT_UNAVAILABLE)
+        destination = os.path.abspath(out_dir); parent = os.path.dirname(destination)
+        os.makedirs(parent, exist_ok=True)
+        if os.path.exists(destination) and os.listdir(destination) and not force:
+            raise GenerateError("destino já contém um Resultado de Geração", FailureCode.PUBLICATION_FAILED)
+        attempt_id = os.environ.get("GERADOR_3D_ATTEMPT_ID", "local")
+        stage = tempfile.mkdtemp(prefix=f".generation-{attempt_id}-", dir=parent)
+        mesh, checks = inspect(spec)
+        clock.lap("inspect")
+        failed = {k: v for k, v in checks.items() if not v["ok"]}
+        if failed:
+            shutil.rmtree(stage)
+            stages, peak = clock.snapshot()
+            raise GenerateError(f"validação falhou: {list(failed)}",
+                                stages={k: v for k, v in stages.items() if k != "total_seconds"},
+                                peak=peak)
+        try:
+            import bpy  # type: ignore[import-not-found]
+            from .bpy_build import mesh_to_bpy
+            bpy.ops.wm.read_factory_settings(use_empty=True); mesh_to_bpy(mesh, spec.type)
+            clock.lap("build")
+            glb_path = os.path.join(stage, "model.glb")
+            bpy.ops.export_scene.gltf(filepath=glb_path, export_format="GLB", export_yup=True)
+            clock.lap("export")
+            checks["reimport"] = _reimport_gate(glb_path, len(set(mesh.face_materials)))
+            clock.lap("reimport")
+            if not checks["reimport"]["ok"]: raise GenerateError(checks["reimport"]["detail"], FailureCode.REIMPORT_FAILED)
+            _render_preview(mesh, os.path.join(stage, "preview.png"))
+            clock.lap("render")
+            stages, peak = clock.snapshot()
+            report = _report(spec, mesh, checks, ok=True, renderer="bpy", stages=stages, peak=peak)
+            _write_report(stage, report)
+            backup = destination + ".previous"
+            if os.path.exists(backup): shutil.rmtree(backup)
+            if os.path.exists(destination): os.replace(destination, backup)
+            os.replace(stage, destination)
+            if os.path.exists(backup): shutil.rmtree(backup)
+            return report
+        except Exception as error:
+            shutil.rmtree(stage, ignore_errors=True)
+            if isinstance(error, GenerateError):
+                if not error.stages:
+                    error.stages = clock.laps
+                if error.peak is None:
+                    error.peak = clock.snapshot()[1]
+                raise
+            stages, peak = clock.snapshot()
+            raise GenerateError(str(error), FailureCode.BUILD_FAILED,
+                                stages={k: v for k, v in stages.items() if k != "total_seconds"},
+                                peak=peak) from error
     finally:
-        tracemalloc.stop()
+        clock.stop()
 
 
 def _renderer() -> str:
@@ -301,7 +360,7 @@ def _reimport_gate(path: str, material_count: int) -> dict:
 
 
 def _report(spec: AnySpec, mesh: MeshData, checks: dict, ok: bool, renderer: str,
-            duration: float = 0.0, peak: int = 0) -> dict:
+            stages: dict[str, float] | None = None, peak: int = 0) -> dict:
     return {
         "schema_version": 1, "status": "success" if ok else "failure", "ok": ok,
         "stage": "published" if ok else "validation", "backend": renderer, "renderer": renderer,
@@ -315,7 +374,8 @@ def _report(spec: AnySpec, mesh: MeshData, checks: dict, ok: bool, renderer: str
         "materials": [m.name for m in mesh.materials],
         "checks": checks,
         "artifacts": ["model.glb", "preview.png", "report.json"] if ok else ["report.json"],
-        "error": None, "metrics": {"stages": {"total_seconds": duration}, "peak_memory_bytes": peak},
+        "error": None, "metrics": {"stages": dict(stages) if stages else {"total_seconds": 0.0},
+                                   "peak_memory_bytes": peak},
     }
 
 
@@ -332,6 +392,7 @@ def _write_report(out_dir: str, report: dict) -> None:
 
 
 def generate_in_process_from_spec_file(spec_path: str, out_dir: str, *, force: bool = False) -> dict:
+    clock = _StageClock()
     try:
         return generate(load_spec_file(spec_path), out_dir, force=force)
     except Exception as error:
@@ -344,18 +405,27 @@ def generate_in_process_from_spec_file(spec_path: str, out_dir: str, *, force: b
                 code = FailureCode.INPUT_INVALID if error.__class__.__name__ == "SpecError" else FailureCode(
                     getattr(error, "code", FailureCode.BUILD_FAILED.value)
                 )
-                report = {"schema_version": 1, "status": "failure", "ok": False, "stage": "input",
+                stages, peak = clock.snapshot()
+                if isinstance(error, GenerateError) and error.stages:
+                    partial = dict(error.stages)
+                    partial.pop("total_seconds", None)
+                    partial.update(stages)
+                    stages = partial
+                report = {"schema_version": 1, "status": "failure", "ok": False,
+                          "stage": stage_for_code(code),
                           "backend": "bpy" if bpy_available() else None,
                           "environment": {"worker": "0.1.0", "blender": _blender_version(),
                                           "process_id": os.getpid(),
                                           "python": platform.python_version(), "render_profile": "medieval_lowpoly-v1"},
                           "resolved_spec": None, "checks": {}, "artifacts": ["report.json"],
                           "error": structured_error(code, str(error)),
-                          "metrics": {"stages": {}, "peak_memory_bytes": 0}}
+                          "metrics": {"stages": stages, "peak_memory_bytes": peak}}
                 _write_report(out_dir, report)
             except OSError:
                 pass
         raise
+    finally:
+        clock.stop()
 
 
 def generate_from_spec_file(
