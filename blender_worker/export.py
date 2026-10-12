@@ -12,6 +12,7 @@ import time
 import tracemalloc
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, TypeVar
 
 from . import generators  # noqa: F401  (registra os 4 geradores)
@@ -20,7 +21,12 @@ from .geometry.mesh import AnchorKind, MeshData
 from .schema import AnySpec, load_spec_file, spec_to_dict
 from .validators import check_glb
 from .failures import FailureCode
-from .reports import failure_report, success_report
+from .reports import (
+    attempt_storage_token,
+    failure_report,
+    publish_failure_report,
+    success_report,
+)
 
 
 @dataclass
@@ -180,7 +186,7 @@ def generate(
             )
         attempt_id = os.environ.get("GERADOR_3D_ATTEMPT_ID", "local")
         stage = tempfile.mkdtemp(
-            prefix=f".generation-{attempt_id}-", dir=parent
+            prefix=f".generation-{attempt_storage_token(attempt_id)}-", dir=parent
         )
         if progress is not None:
             progress("validation")
@@ -643,7 +649,7 @@ def generate_in_process_from_spec_file(
                         "peak_memory_bytes": measured.peak_memory_bytes,
                     },
                 )
-                _write_report(out_dir, report)
+                publish_failure_report(Path(out_dir), report)
             except OSError:
                 pass
         raise

@@ -1,6 +1,7 @@
 """Marco 2: public GenerationAttemptExecutor seam."""
 
 import json
+import math
 import os
 from pathlib import Path
 import threading
@@ -19,6 +20,16 @@ from blender_worker.attempts import (
     JsonLinesProgressObserver,
     PublishedResult,
 )
+from blender_worker.reports import attempt_storage_token, environment
+
+
+@pytest.mark.parametrize("timeout", [math.nan, math.inf, -math.inf, 0.0, -1.0])
+def test_timeout_must_be_finite_and_positive(tmp_path: Path, timeout: float) -> None:
+    with pytest.raises(ValueError, match="finito e positivo"):
+        GenerationAttempt(
+            AttemptId("attempt-bad-timeout"), _valid_house(), tmp_path / "result",
+            timeout_seconds=timeout,
+        )
 
 
 def test_invalid_input_returns_a_correlated_safe_failure(tmp_path: Path) -> None:
@@ -44,7 +55,7 @@ def test_invalid_input_progress_is_optional_and_observational(tmp_path: Path) ->
     observer = InMemoryProgressObserver()
 
     outcome = GenerationAttemptExecutor(observer=observer).execute(GenerationAttempt(
-        AttemptId("attempt-progress-invalid"), {"not": "a spec"}, tmp_path / "result",
+        AttemptId("attempt-progress-invalid"), {"not-json"}, tmp_path / "result",
     ))
 
     assert isinstance(outcome, FailedAttempt)
@@ -57,7 +68,7 @@ def test_progress_observer_failure_does_not_change_the_outcome(tmp_path: Path) -
             raise RuntimeError("telemetria indisponível")
 
     outcome = GenerationAttemptExecutor(observer=BrokenObserver()).execute(GenerationAttempt(
-        AttemptId("attempt-broken-observer"), {"not": "a spec"}, tmp_path / "result",
+        AttemptId("attempt-broken-observer"), {"not-json"}, tmp_path / "result",
     ))
 
     assert isinstance(outcome, FailedAttempt)
@@ -71,7 +82,7 @@ def test_slow_progress_observer_does_not_block_the_outcome(tmp_path: Path) -> No
 
     started = time.monotonic()
     outcome = GenerationAttemptExecutor(observer=SlowObserver()).execute(GenerationAttempt(
-        AttemptId("attempt-slow-observer"), {"not": "a spec"}, tmp_path / "result",
+        AttemptId("attempt-slow-observer"), {"not-json"}, tmp_path / "result",
     ))
 
     assert isinstance(outcome, FailedAttempt)
@@ -83,7 +94,7 @@ def test_json_lines_progress_adapter_is_local_and_structured(tmp_path: Path) -> 
     outcome = GenerationAttemptExecutor(
         observer=JsonLinesProgressObserver(path),
     ).execute(GenerationAttempt(
-        AttemptId("attempt-jsonl"), {"not": "a spec"}, tmp_path / "result",
+        AttemptId("attempt-jsonl"), {"not-json"}, tmp_path / "result",
     ))
 
     assert isinstance(outcome, FailedAttempt)
@@ -108,14 +119,33 @@ def test_environment_failure_is_a_typed_correlated_outcome(
 ) -> None:
     monkeypatch.setenv("GERADOR_3D_PYTHON", "/usr/bin/python3")
     attempt = GenerationAttempt(
-        AttemptId("attempt-no-bpy"), _valid_house(), tmp_path / "result", timeout_seconds=10,
+        AttemptId("tenant/attempt no bpy"), _valid_house(), tmp_path / "result",
+        timeout_seconds=10,
     )
 
     outcome = GenerationAttemptExecutor().execute(attempt)
 
     assert isinstance(outcome, FailedAttempt)
-    assert outcome.report["attempt_id"] == "attempt-no-bpy"
+    assert outcome.report["attempt_id"] == "tenant/attempt no bpy"
     assert outcome.report["error"]["code"] == "environment.unavailable"
+
+
+def test_occupied_destination_is_preserved_by_the_executor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "result"
+    destination.mkdir()
+    original = b'{"ok":true,"sentinel":"keep"}'
+    (destination / "report.json").write_bytes(original)
+    monkeypatch.setenv("GERADOR_3D_PYTHON", "/usr/bin/python3")
+
+    outcome = GenerationAttemptExecutor().execute(GenerationAttempt(
+        AttemptId("attempt-occupied"), _valid_house(), destination,
+    ))
+
+    assert isinstance(outcome, FailedAttempt)
+    assert outcome.report["error"]["code"] == "environment.unavailable"
+    assert (destination / "report.json").read_bytes() == original
 
 
 def test_timeout_is_distinct_and_cleans_the_attempt(
@@ -198,8 +228,14 @@ def test_atomic_publication_wins_a_concurrent_cancellation(
         "  shift\n"
         "done\n"
         "mkdir -p \"$out\"\n"
+        "printf 'glb' > \"$out/model.glb\"\n"
+        "printf 'png' > \"$out/preview.png\"\n"
         "printf '%s' '{\"ok\":true,\"stage\":\"published\",\"backend\":\"bpy\","
-        "\"generation_fingerprint\":\"sha256:committed\"}' > \"$out/report.json\"\n"
+        "\"attempt_id\":\"attempt-commit-wins\","
+        "\"generation_fingerprint\":\"sha256:committed\","
+        "\"resolved_spec\":{\"spec_version\":1,\"type\":\"house\",\"seed\":42},"
+        "\"artifacts\":[\"model.glb\",\"preview.png\",\"report.json\"]}'"
+        " > \"$out/report.json\"\n"
         "sleep 30\n"
     )
     executable.chmod(0o755)
@@ -225,6 +261,66 @@ def test_atomic_publication_wins_a_concurrent_cancellation(
     assert json.loads((destination / "report.json").read_text())["stage"] == "published"
 
 
+def test_incomplete_published_report_is_not_a_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "incomplete-python"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "while [ $# -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"--out\" ]; then shift; out=$1; fi\n"
+        "  shift\n"
+        "done\n"
+        "mkdir -p \"$out\"\n"
+        "printf '%s' '{\"ok\":true,\"stage\":\"published\",\"backend\":\"bpy\"}'"
+        " > \"$out/report.json\"\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("GERADOR_3D_PYTHON", str(executable))
+
+    outcome = GenerationAttemptExecutor().execute(GenerationAttempt(
+        AttemptId("attempt-incomplete"), _valid_house(), tmp_path / "result",
+    ))
+
+    assert isinstance(outcome, FailedAttempt)
+    assert outcome.report["error"]["code"] == "environment.unavailable"
+    assert sorted(path.name for path in (tmp_path / "result").iterdir()) == ["report.json"]
+
+
+def test_abnormal_child_cleanup_removes_only_its_staging_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempt_id = "tenant/abnormal attempt"
+    token = attempt_storage_token(attempt_id)
+    executable = tmp_path / "abnormal-python"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "while [ $# -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"--out\" ]; then shift; out=$1; fi\n"
+        "  shift\n"
+        "done\n"
+        f'mkdir -p "$(dirname "$out")/.generation-{token}-orphan"\n'
+        "exit 7\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("GERADOR_3D_PYTHON", str(executable))
+
+    outcome = GenerationAttemptExecutor().execute(GenerationAttempt(
+        AttemptId(attempt_id), _valid_house(), tmp_path / "result",
+    ))
+
+    assert isinstance(outcome, FailedAttempt)
+    assert outcome.report["error"]["code"] == "environment.unavailable"
+    assert not list(tmp_path.glob(".generation-*"))
+    assert not list(tmp_path.glob(".attempt-*"))
+
+
+def test_environment_records_configured_build_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GERADOR_3D_BUILD_COMMIT", "abc123")
+
+    assert environment(blender=None)["build_commit"] == "abc123"
+
+
 @pytest.mark.integration
 def test_distinct_attempts_share_the_fingerprint_of_the_same_generation(
     tmp_path: Path,
@@ -237,7 +333,9 @@ def test_distinct_attempts_share_the_fingerprint_of_the_same_generation(
         AttemptId("attempt-one"), spec, tmp_path / "one",
     ))
     second = executor.execute(GenerationAttempt(
-        AttemptId("attempt-two"), spec, tmp_path / "two",
+        AttemptId("attempt-two"),
+        {"spec_version": 1, "type": "house", "seed": 42},
+        tmp_path / "two",
     ))
 
     assert isinstance(first, PublishedResult)

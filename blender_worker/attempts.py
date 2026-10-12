@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import queue
 import tempfile
 import threading
@@ -13,8 +14,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .failures import FailureCode
-from .reports import monotonic_failure_report
-from .schema import SpecError, load_spec
+from .reports import (
+    attempt_storage_token,
+    measured_failure_report,
+    publish_failure_report,
+)
 
 
 @dataclass(frozen=True)
@@ -55,8 +59,10 @@ class GenerationAttempt:
     cancellation: CancellationToken | None = None
 
     def __post_init__(self) -> None:
-        if self.timeout_seconds is not None and self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds deve ser positivo")
+        if self.timeout_seconds is not None and (
+            not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0
+        ):
+            raise ValueError("timeout_seconds deve ser finito e positivo")
 
 
 @dataclass(frozen=True)
@@ -170,15 +176,6 @@ def read_untrusted_spec_file(path: str | Path) -> object:
         return raw
 
 
-def _publish_report_if_possible(destination: Path, report: dict[str, Any]) -> None:
-    if destination.exists() and any(destination.iterdir()):
-        return
-    destination.mkdir(parents=True, exist_ok=True)
-    (destination / "report.json").write_text(
-        json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8",
-    )
-
-
 class GenerationAttemptExecutor:
     """Execute one attempt without exposing the pipeline's internal stages."""
 
@@ -197,25 +194,25 @@ class GenerationAttemptExecutor:
     ) -> AttemptOutcome:
         if attempt.cancellation is not None and attempt.cancellation.is_cancelled:
             progress.emit("input")
-            report = monotonic_failure_report(
+            report = measured_failure_report(
                 attempt_id=attempt.attempt_id.value,
                 code=FailureCode.EXECUTION_CANCELLED,
                 detail="cancelamento solicitado antes do início",
                 input_value=attempt.spec,
             )
-            _publish_report_if_possible(attempt.destination, report)
+            publish_failure_report(attempt.destination, report)
             return CancelledAttempt(attempt.attempt_id, report)
         try:
-            load_spec(attempt.spec)  # type: ignore[arg-type]
-        except (SpecError, TypeError, ValueError) as error:
+            serialized_spec = json.dumps(attempt.spec, ensure_ascii=False)
+        except (TypeError, ValueError) as error:
             progress.emit("input")
-            report = monotonic_failure_report(
+            report = measured_failure_report(
                 attempt_id=attempt.attempt_id.value,
                 code=FailureCode.INPUT_INVALID,
                 detail=str(error),
                 input_value=attempt.spec,
             )
-            _publish_report_if_possible(attempt.destination, report)
+            publish_failure_report(attempt.destination, report)
             return FailedAttempt(attempt.attempt_id, report)
 
         # The existing process runner remains the single official execution
@@ -226,10 +223,10 @@ class GenerationAttemptExecutor:
         attempt.destination.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", suffix=".json",
-            prefix=f".attempt-{attempt.attempt_id.value}-",
+            prefix=f".attempt-{attempt_storage_token(attempt.attempt_id.value)}-",
             dir=attempt.destination.parent, delete=False,
         ) as source:
-            json.dump(attempt.spec, source, ensure_ascii=False)
+            source.write(serialized_spec)
             source_path = Path(source.name)
         try:
             try:
@@ -248,7 +245,7 @@ class GenerationAttemptExecutor:
                 elif report_path.is_file():
                     report = json.loads(report_path.read_text(encoding="utf-8"))
                 else:
-                    report = monotonic_failure_report(
+                    report = measured_failure_report(
                         attempt_id=attempt.attempt_id.value,
                         code=FailureCode(error.code),
                         detail=str(error),

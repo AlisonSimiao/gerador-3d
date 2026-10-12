@@ -8,12 +8,18 @@ import os
 import platform
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from .failures import FailureCode, stage_for_code, structured_error
 
 WORKER_VERSION = "0.1.0"
 RENDER_PROFILE = "medieval_lowpoly-v2"
+
+
+def attempt_storage_token(attempt_id: str) -> str:
+    """Derive a filesystem-safe token without changing the opaque identity."""
+    return hashlib.sha256(attempt_id.encode()).hexdigest()[:32]
 
 
 def safe_input_hash(value: object) -> str:
@@ -42,14 +48,29 @@ def generation_fingerprint(
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def environment(*, backend: str | None, blender: str | None) -> dict[str, Any]:
+def environment(*, blender: str | None) -> dict[str, Any]:
     return {
         "worker": WORKER_VERSION,
         "blender": blender,
         "python": platform.python_version(),
         "process_id": os.getpid(),
         "render_profile": RENDER_PROFILE,
+        "build_commit": (
+            os.environ.get("GERADOR_3D_BUILD_COMMIT")
+            or os.environ.get("GITHUB_SHA")
+        ),
     }
+
+
+def publish_failure_report(destination: Path, report: Mapping[str, Any]) -> bool:
+    """Publish only a report without replacing an occupied destination."""
+    if destination.exists() and any(destination.iterdir()):
+        return False
+    destination.mkdir(parents=True, exist_ok=True)
+    (destination / "report.json").write_text(
+        json.dumps(dict(report), indent=2, ensure_ascii=False), encoding="utf-8",
+    )
+    return True
 
 
 def failure_report(
@@ -72,7 +93,7 @@ def failure_report(
         "ok": False,
         "stage": stage or stage_for_code(code),
         "backend": backend,
-        "environment": environment(backend=backend, blender=blender),
+        "environment": environment(blender=blender),
         "attempt_id": attempt_id,
         "resolved_spec": None,
         "checks": {},
@@ -111,7 +132,7 @@ def success_report(
         "generation_fingerprint": generation_fingerprint(
             resolved_spec, blender_version=blender,
         ),
-        "environment": environment(backend="bpy", blender=blender),
+        "environment": environment(blender=blender),
         "resolved_spec": dict(resolved_spec),
         # Compatibility field retained while consumers migrate to resolved_spec.
         "spec": dict(resolved_spec),
@@ -126,7 +147,7 @@ def success_report(
     }
 
 
-def monotonic_failure_report(
+def measured_failure_report(
     *, attempt_id: str, code: FailureCode, detail: str, input_value: object,
 ) -> dict[str, Any]:
     started = time.perf_counter()

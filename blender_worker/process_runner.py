@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -17,7 +18,7 @@ from typing import Protocol
 
 from .export import AttemptMetrics, GenerateError, _StageClock
 from .failures import REPORT_STAGES, FailureCode
-from .reports import failure_report
+from .reports import attempt_storage_token, failure_report, publish_failure_report
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
 
@@ -31,13 +32,14 @@ def _timeout_seconds(explicit: float | None) -> float:
     value = explicit
     if value is None:
         value = float(os.environ.get("GERADOR_3D_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
-    if value <= 0:
-        raise ValueError("timeout_seconds deve ser positivo")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("timeout_seconds deve ser finito e positivo")
     return value
 
 
 def _remove_attempt_staging(parent: Path, attempt_id: str) -> None:
-    for path in parent.glob(f".generation-{attempt_id}-*"):
+    token = attempt_storage_token(attempt_id)
+    for path in parent.glob(f".generation-{token}-*"):
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
 
@@ -68,9 +70,7 @@ def _write_runner_failure(out_dir: Path, code: FailureCode, detail: str,
             "peak_memory_bytes": measured.peak_memory_bytes,
         },
     )
-    if not out_dir.exists() or not any(out_dir.iterdir()):
-        out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    publish_failure_report(out_dir, report)
     return report
 
 
@@ -80,6 +80,50 @@ def _terminate_process(process: subprocess.Popen[str]) -> tuple[str, str]:
     except ProcessLookupError:
         pass
     return process.communicate()
+
+
+def _published_result_is_complete(
+    report: dict | None, destination: Path, attempt_id: str,
+) -> bool:
+    expected = {"model.glb", "preview.png", "report.json"}
+    if not (
+        report is not None
+        and report.get("ok") is True
+        and report.get("stage") == "published"
+        and report.get("backend") == "bpy"
+        and report.get("attempt_id") == attempt_id
+        and str(report.get("generation_fingerprint", "")).startswith("sha256:")
+        and isinstance(report.get("resolved_spec"), dict)
+        and set(report.get("artifacts", ())) == expected
+        and destination.is_dir()
+    ):
+        return False
+    paths = list(destination.iterdir())
+    return (
+        {path.name for path in paths} == expected
+        and all(path.is_file() and path.stat().st_size > 0 for path in paths)
+    )
+
+
+def _read_fresh_report(
+    report_path: Path, previous_report: bytes | None,
+) -> dict | None:
+    try:
+        encoded = report_path.read_bytes()
+        if previous_report is not None and encoded == previous_report:
+            return None
+        report = json.loads(encoded)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return report if isinstance(report, dict) else None
+
+
+def _cleanup_attempt(
+    *, parent: Path, attempt_id: str, progress_path: Path, clock: _StageClock,
+) -> None:
+    _remove_attempt_staging(parent, attempt_id)
+    progress_path.unlink(missing_ok=True)
+    clock.stop()
 
 
 def run_generation_process(
@@ -98,12 +142,14 @@ def run_generation_process(
     destination = Path(out_dir).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     report_path = destination / "report.json"
+    destination_was_occupied = destination.exists() and any(destination.iterdir())
     # A failed attempt never overwrites an occupied destination, so a report
     # identical to this snapshot is the previous Result of Generation — stale,
     # never the current attempt's. Only a fresh report may be trusted below.
     previous_report = report_path.read_bytes() if report_path.is_file() else None
     attempt_id = attempt_id or uuid.uuid4().hex
-    progress_path = destination.parent / f".attempt-{attempt_id}-progress.jsonl"
+    storage_token = attempt_storage_token(attempt_id)
+    progress_path = destination.parent / f".attempt-{storage_token}-progress.jsonl"
     progress_path.unlink(missing_ok=True)
     progress_path.touch()
     progress_offset = 0
@@ -147,8 +193,6 @@ def run_generation_process(
     )
     if progress is not None:
         progress("input")
-        progress("environment")
-    last_stage = "environment"
     try:
         process = subprocess.Popen(
             command,
@@ -160,8 +204,12 @@ def run_generation_process(
         )
     except OSError as error:
         measured = clock.snapshot()
-        clock.stop()
-        progress_path.unlink(missing_ok=True)
+        if progress is not None:
+            progress("environment")
+        _cleanup_attempt(
+            parent=destination.parent, attempt_id=attempt_id,
+            progress_path=progress_path, clock=clock,
+        )
         failure_report = _write_runner_failure(
             destination, FailureCode.ENVIRONMENT_UNAVAILABLE, str(error),
             attempt_id=attempt_id,
@@ -177,23 +225,17 @@ def run_generation_process(
         if cancellation is not None and cancellation.is_cancelled:
             _stdout, stderr = _terminate_process(process)
             drain_progress()
-            committed = None
-            if report_path.is_file() and (
-                previous_report is None or report_path.read_bytes() != previous_report
-            ):
-                try:
-                    committed = json.loads(report_path.read_text())
-                except (json.JSONDecodeError, OSError):
-                    committed = None
-            if committed is not None and committed.get("stage") == "published":
+            committed = _read_fresh_report(report_path, previous_report)
+            if _published_result_is_complete(committed, destination, attempt_id):
                 # Atomic commit is the terminal point: once visible, success
                 # wins even if cancellation was requested concurrently.
                 break
-            _remove_attempt_staging(destination.parent, attempt_id)
             detail = "cancelamento solicitado durante a execução"
             measured = clock.snapshot()
-            clock.stop()
-            progress_path.unlink(missing_ok=True)
+            _cleanup_attempt(
+                parent=destination.parent, attempt_id=attempt_id,
+                progress_path=progress_path, clock=clock,
+            )
             cancelled_report = _write_runner_failure(
                 destination, FailureCode.EXECUTION_CANCELLED, detail,
                 attempt_id=attempt_id, metrics=measured, stage=last_stage,
@@ -205,11 +247,15 @@ def run_generation_process(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             _terminate_process(process)
-            _remove_attempt_staging(destination.parent, attempt_id)
+            committed = _read_fresh_report(report_path, previous_report)
+            if _published_result_is_complete(committed, destination, attempt_id):
+                break
             detail = f"processo Blender excedeu {timeout:g} segundos e foi encerrado"
             measured = clock.snapshot()
-            clock.stop()
-            progress_path.unlink(missing_ok=True)
+            _cleanup_attempt(
+                parent=destination.parent, attempt_id=attempt_id,
+                progress_path=progress_path, clock=clock,
+            )
             timeout_report = _write_runner_failure(
                 destination, FailureCode.PROCESS_TIMEOUT, detail,
                 attempt_id=attempt_id, metrics=measured,
@@ -225,15 +271,11 @@ def run_generation_process(
         except subprocess.TimeoutExpired:
             continue
 
-    report_path = destination / "report.json"
-    report: dict | None = json.loads(report_path.read_text()) if report_path.is_file() else None
-    fresh = report is not None and (
-        previous_report is None or report_path.read_bytes() != previous_report
-    )
+    report = _read_fresh_report(report_path, previous_report)
+    fresh = report is not None
     try:
         committed_success = bool(
-            fresh and report is not None
-            and report.get("ok") is True and report.get("stage") == "published"
+            fresh and _published_result_is_complete(report, destination, attempt_id)
         )
         if process.returncode != 0 and not committed_success:
             if report is None or not fresh:
@@ -256,15 +298,33 @@ def run_generation_process(
                 )
             try:
                 code = FailureCode(report["error"]["code"])
-            except (KeyError, ValueError):
+                detail = str(report["error"]["detail"])
+            except (KeyError, TypeError, ValueError):
                 code = FailureCode.BUILD_FAILED
-            raise GenerateError(str(report["error"]["detail"]), code, report=report)
-        if report is None or report.get("backend") != "bpy":
+                detail = "processo oficial terminou com relatório de falha inválido"
+                if not destination_was_occupied and destination.exists():
+                    shutil.rmtree(destination, ignore_errors=True)
+                measured = clock.snapshot()
+                report = _write_runner_failure(
+                    destination, code, detail,
+                    attempt_id=attempt_id, metrics=measured,
+                )
+            _cleanup_attempt(
+                parent=destination.parent, attempt_id=attempt_id,
+                progress_path=progress_path, clock=clock,
+            )
+            raise GenerateError(detail, code, report=report)
+        if not committed_success:
             detail = (
-                "processo oficial terminou sem relatório "
-                "produzido pelo backend bpy"
+                "processo oficial terminou sem Resultado de Geração completo e confiável"
             )
             measured = clock.snapshot()
+            if not destination_was_occupied and destination.exists():
+                shutil.rmtree(destination, ignore_errors=True)
+            _cleanup_attempt(
+                parent=destination.parent, attempt_id=attempt_id,
+                progress_path=progress_path, clock=clock,
+            )
             unavailable_report = _write_runner_failure(
                 destination, FailureCode.ENVIRONMENT_UNAVAILABLE, detail,
                 attempt_id=attempt_id,
@@ -274,6 +334,7 @@ def run_generation_process(
                 detail, FailureCode.ENVIRONMENT_UNAVAILABLE,
                 report=unavailable_report,
             )
+        assert report is not None
         return report
     finally:
         clock.stop()

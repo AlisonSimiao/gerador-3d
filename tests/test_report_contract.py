@@ -45,7 +45,7 @@ def assert_report_contract(report: dict) -> None:
     assert report["stage"] in REPORT_STAGES, f"undocumented stage: {report['stage']!r}"
     assert report["backend"] in ("bpy", None)
     environment = report["environment"]
-    for key in ("worker", "blender", "python", "render_profile"):
+    for key in ("worker", "blender", "python", "render_profile", "build_commit"):
         assert key in environment, f"environment missing {key!r}"
     assert isinstance(report["checks"], dict)
     assert isinstance(report["artifacts"], list) and report["artifacts"]
