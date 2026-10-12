@@ -12,11 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from blender_worker import export
+from blender_worker import export, reports
 from blender_worker.export import generate_in_process_from_spec_file
 from blender_worker.failures import REPORT_STAGES, FailureCode, stage_for_code
 from blender_worker.process_runner import run_generation_process
-from blender_worker.schema import load_spec_file
+from blender_worker.schema import load_spec, load_spec_file, spec_to_dict
 
 #: Stable top-level fields every report carries (ADR 0007 + ticket 13).
 REQUIRED_TOP_LEVEL = frozenset({
@@ -148,6 +148,108 @@ def test_runner_failure_report_carries_measured_metrics(
     assert report["error"]["code"] == "environment.unavailable"
     assert "total_seconds" in report["metrics"]["stages"]
     assert report["metrics"]["peak_memory_bytes"] > 0
+
+
+def _resolved_house(seed: int = 7) -> dict:
+    return spec_to_dict(load_spec({"spec_version": 1, "type": "house", "seed": seed}))
+
+
+def test_fingerprint_derives_from_resolved_spec_and_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A pinned environment yields a known-good fingerprint, so an accidental
+    # change to the derivation inputs is caught rather than silently accepted.
+    monkeypatch.setattr(reports, "WORKER_VERSION", "worker-fixture")
+    monkeypatch.setattr(reports, "RENDER_PROFILE", "profile-fixture")
+    resolved = {"spec_version": 1, "type": "house", "seed": 7}
+
+    assert reports.generation_fingerprint(
+        resolved, blender_version="4.2.0-fixture",
+    ) == "sha256:dbdcdf477a288743de1d57e7472582aea741d43605a068442bdd2ce5f6feb801"
+
+    baseline = reports.generation_fingerprint(resolved, blender_version="4.2.0")
+    # Each relevant version participates in the fingerprint.
+    assert reports.generation_fingerprint(
+        resolved, blender_version="4.3.0",
+    ) != baseline
+    monkeypatch.setattr(reports, "WORKER_VERSION", "other-worker")
+    assert reports.generation_fingerprint(
+        resolved, blender_version="4.2.0",
+    ) != baseline
+
+
+def test_fingerprint_ignores_key_order_and_equivalent_resolved_specs() -> None:
+    # Two raw representations that resolve to one Resolved Spec must agree, so
+    # equivalence is a property of the Resolved Spec, not of key ordering.
+    minimal_raw = {"spec_version": 1, "type": "house", "seed": 42}
+    expanded_raw = json.loads(Path("specs/house_default.json").read_text())
+    resolved = spec_to_dict(load_spec(minimal_raw))
+    assert spec_to_dict(load_spec(expanded_raw)) == resolved
+
+    fingerprint = reports.generation_fingerprint(resolved, blender_version="4.2.0")
+    assert reports.generation_fingerprint(
+        dict(reversed(list(resolved.items()))), blender_version="4.2.0",
+    ) == fingerprint
+
+
+def test_fingerprint_is_independent_of_attempt_identity_and_not_seed_alone(
+    tmp_path: Path,
+) -> None:
+    resolved = _resolved_house(seed=42)
+
+    def fingerprint_for_attempt(attempt_id: str) -> str:
+        report = reports.success_report(
+            attempt_id=attempt_id,
+            resolved_spec=resolved,
+            checks={},
+            blender="4.2.0",
+            metrics={"stages": {"total_seconds": 0.0}, "peak_memory_bytes": 0},
+            tri_count=1, verts=1, faces=1, materials=[],
+        )
+        return str(report["generation_fingerprint"])
+
+    assert fingerprint_for_attempt("attempt-one") == fingerprint_for_attempt("attempt-two")
+    # The Seed is an input to the fingerprint, never the identity itself.
+    assert fingerprint_for_attempt("attempt-one") != (
+        reports.generation_fingerprint(_resolved_house(seed=43), blender_version="4.2.0")
+    )
+
+
+def test_success_report_records_attempt_identity_and_fingerprint() -> None:
+    report = reports.success_report(
+        attempt_id="attempt-identity",
+        resolved_spec=_resolved_house(seed=42),
+        checks={},
+        blender="4.2.0",
+        metrics={"stages": {"total_seconds": 0.0}, "peak_memory_bytes": 0},
+        tri_count=1, verts=1, faces=1, materials=[],
+    )
+
+    assert_report_contract(report)
+    assert report["attempt_id"] == "attempt-identity"
+    assert report["generation_fingerprint"] == reports.generation_fingerprint(
+        report["resolved_spec"], blender_version="4.2.0",
+    )
+
+
+def test_invalid_input_report_records_only_attempt_identity_and_safe_hash() -> None:
+    secret = "conteúdo-arbitrário-rejeitado"
+    report = reports.failure_report(
+        attempt_id="attempt-invalid-identity",
+        code=FailureCode.INPUT_INVALID,
+        detail="campo desconhecido",
+        input_value={"type": "house", "unknown": secret},
+    )
+
+    assert_report_contract(report)
+    assert report["attempt_id"] == "attempt-invalid-identity"
+    assert report["input_hash"] == reports.safe_input_hash(
+        {"type": "house", "unknown": secret},
+    )
+    # No fingerprint is claimed for input that never resolved.
+    assert "generation_fingerprint" not in report
+    assert report["resolved_spec"] is None
+    assert secret not in json.dumps(report, ensure_ascii=False)
 
 
 def test_stage_values_come_from_the_documented_stable_set() -> None:
