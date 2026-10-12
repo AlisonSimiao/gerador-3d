@@ -21,3 +21,29 @@
 ## Answer
 
 `GenerationAttemptExecutor.execute` é o seam único e retorna os três desfechos tipados. A entrada anterior delega por wrapper e a pipeline oficial permanece a única implementação.
+
+Lacunas reais fechadas nesta passagem (commit `8d34f5c`):
+
+- `generate_from_spec_file` tratava `CancelledAttempt` como sucesso e devolvia
+  o relatório de cancelamento como se fosse resultado. Agora traduz falha e
+  cancelamento para `GenerateError` com o código estruturado, mantendo
+  `PublishedResult` como único caminho de retorno.
+- Um `GERADOR_3D_TIMEOUT_SECONDS` operacional inválido escapava como
+  `could not convert string to float`. `_timeout_seconds` agora valida o
+  default também e levanta `ValueError("timeout_seconds deve ser finito e
+  positivo")` antes de qualquer processo filho, como as opções explícitas.
+
+Critérios já satisfeitos, agora com evidência no seam do executor
+(`tests/test_attempt_executor.py`):
+
+- Campo de `GenerationAttempt` e defaults (`REJECT`, sem timeout, sem
+  cancellation) fixados por teste; nenhum comando de etapa no input.
+- `GenerationAttemptExecutor` expõe publicamente apenas `execute`.
+- Destino ocupado rejeitado por padrão preservando cada byte
+  (`publication.failed`); `ExistingResultPolicy.REPLACE` substitui o conjunto
+  inteiro atomicamente sem resíduo de staging.
+- Wrapper anterior delega sem lógica própria e traduz o código da falha.
+
+Sucesso oficial permanece coberto apenas pelo nível `integration`
+(`test_distinct_attempts_share_the_fingerprint_of_the_same_generation`),
+conforme o ADR de release gate; verificado verde com Blender 5.2.2 LTS.
