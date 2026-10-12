@@ -20,6 +20,7 @@ from blender_worker.attempts import (
     JsonLinesProgressObserver,
     PublishedResult,
 )
+from blender_worker.failures import REPORT_STAGES
 from blender_worker.reports import attempt_storage_token, environment
 
 
@@ -215,6 +216,70 @@ def test_cancellation_during_execution_reaps_the_process_group(
         os.kill(child_pid, 0)
     assert not list(tmp_path.glob(".generation-*"))
     assert not list(tmp_path.glob(".attempt-*.json"))
+
+
+def test_cancellation_reports_the_furthest_documented_stage_reached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = tmp_path / "reached-reimport"
+    executable = tmp_path / "staged-python"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "printf '{\"stage\":\"environment\"}\\n' > \"$GERADOR_3D_PROGRESS_PATH\"\n"
+        "printf '{\"stage\":\"reimport\"}\\n' >> \"$GERADOR_3D_PROGRESS_PATH\"\n"
+        f"touch {marker}\n"
+        "sleep 30\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("GERADOR_3D_PYTHON", str(executable))
+    cancellation = CancellationToken()
+
+    def cancel_once_reached() -> None:
+        while not marker.exists():
+            time.sleep(0.01)
+        for _ in range(3):
+            cancellation.cancel()
+
+    requester = threading.Thread(target=cancel_once_reached)
+    requester.start()
+    outcome = GenerationAttemptExecutor().execute(GenerationAttempt(
+        AttemptId("attempt-stage-reached"), _valid_house(), tmp_path / "result",
+        timeout_seconds=10, cancellation=cancellation,
+    ))
+    requester.join()
+
+    assert isinstance(outcome, CancelledAttempt)
+    assert outcome.report["stage"] == "reimport"
+    assert outcome.report["stage"] in REPORT_STAGES
+
+
+def test_repeated_cancellation_requests_stay_idempotent(tmp_path: Path) -> None:
+    cancellation = CancellationToken()
+
+    def request() -> None:
+        for _ in range(20):
+            cancellation.cancel()
+
+    requesters = [threading.Thread(target=request) for _ in range(4)]
+    for requester in requesters:
+        requester.start()
+    for requester in requesters:
+        requester.join()
+    destination = tmp_path / "result"
+
+    first = GenerationAttemptExecutor().execute(GenerationAttempt(
+        AttemptId("attempt-idempotent"), _valid_house(), destination,
+        cancellation=cancellation,
+    ))
+    second = GenerationAttemptExecutor().execute(GenerationAttempt(
+        AttemptId("attempt-idempotent"), _valid_house(), destination,
+        cancellation=cancellation,
+    ))
+
+    assert isinstance(first, CancelledAttempt)
+    assert isinstance(second, CancelledAttempt)
+    assert first.report["error"] == second.report["error"]
+    assert sorted(path.name for path in destination.iterdir()) == ["report.json"]
 
 
 def test_atomic_publication_wins_a_concurrent_cancellation(
