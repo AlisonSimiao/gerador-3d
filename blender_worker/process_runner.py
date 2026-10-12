@@ -10,12 +10,21 @@ import signal
 import shutil
 import subprocess
 import sys
+import time
 import uuid
+from collections.abc import Callable
+from typing import Protocol
 
 from .export import AttemptMetrics, GenerateError, _StageClock
-from .failures import FailureCode, stage_for_code, structured_error
+from .failures import REPORT_STAGES, FailureCode
+from .reports import failure_report
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
+
+
+class Cancellation(Protocol):
+    @property
+    def is_cancelled(self) -> bool: ...
 
 
 def _timeout_seconds(explicit: float | None) -> float:
@@ -45,29 +54,32 @@ def _code_from_stderr(stderr: str) -> tuple[FailureCode, str] | None:
 
 
 def _write_runner_failure(out_dir: Path, code: FailureCode, detail: str,
-                            metrics: AttemptMetrics | None = None) -> dict:
+                          *, attempt_id: str,
+                          metrics: AttemptMetrics | None = None,
+                          stage: str | None = None) -> dict:
     measured = metrics if metrics is not None else AttemptMetrics()
-    report = {
-        "schema_version": 1,
-        "status": "failure",
-        "ok": False,
-        "stage": stage_for_code(code),
-        "backend": None,
-        "environment": {"worker": "0.1.0", "blender": None, "python": None,
-                        "process_id": os.getpid(),
-                        "render_profile": "medieval_lowpoly-v2"},
-        "resolved_spec": None,
-        "checks": {},
-        "artifacts": ["report.json"],
-        "error": structured_error(code, detail),
-        "metrics": {"stages": dict(measured.stages)
-                    if measured.stages else {"total_seconds": 0.0},
-                    "peak_memory_bytes": measured.peak_memory_bytes},
-    }
+    report = failure_report(
+        attempt_id=attempt_id,
+        code=code,
+        detail=detail,
+        stage=stage,
+        metrics={
+            "stages": dict(measured.stages) if measured.stages else {"total_seconds": 0.0},
+            "peak_memory_bytes": measured.peak_memory_bytes,
+        },
+    )
     if not out_dir.exists() or not any(out_dir.iterdir()):
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
     return report
+
+
+def _terminate_process(process: subprocess.Popen[str]) -> tuple[str, str]:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    return process.communicate()
 
 
 def run_generation_process(
@@ -76,6 +88,9 @@ def run_generation_process(
     *,
     force: bool = False,
     timeout_seconds: float | None = None,
+    attempt_id: str | None = None,
+    cancellation: Cancellation | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> dict:
     """Run one official attempt in a new process and wait until it is reaped."""
     clock = _StageClock()
@@ -87,7 +102,30 @@ def run_generation_process(
     # identical to this snapshot is the previous Result of Generation — stale,
     # never the current attempt's. Only a fresh report may be trusted below.
     previous_report = report_path.read_bytes() if report_path.is_file() else None
-    attempt_id = uuid.uuid4().hex
+    attempt_id = attempt_id or uuid.uuid4().hex
+    progress_path = destination.parent / f".attempt-{attempt_id}-progress.jsonl"
+    progress_path.unlink(missing_ok=True)
+    progress_path.touch()
+    progress_offset = 0
+    last_stage = "input"
+
+    def drain_progress() -> None:
+        nonlocal progress_offset, last_stage
+        with progress_path.open(encoding="utf-8") as stream:
+            stream.seek(progress_offset)
+            for line in stream:
+                try:
+                    stage = str(json.loads(line)["stage"])
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    continue
+                if stage not in REPORT_STAGES:
+                    continue
+                if REPORT_STAGES.index(stage) <= REPORT_STAGES.index(last_stage):
+                    continue
+                last_stage = stage
+                if progress is not None:
+                    progress(stage)
+            progress_offset = stream.tell()
     executable = os.environ.get("GERADOR_3D_PYTHON", sys.executable)
     command = [
         executable,
@@ -102,10 +140,15 @@ def run_generation_process(
         command.append("--force")
     environment = os.environ.copy()
     environment["GERADOR_3D_ATTEMPT_ID"] = attempt_id
+    environment["GERADOR_3D_PROGRESS_PATH"] = str(progress_path)
     package_root = str(Path(__file__).resolve().parent.parent)
     environment["PYTHONPATH"] = os.pathsep.join(
         filter(None, (package_root, environment.get("PYTHONPATH", "")))
     )
+    if progress is not None:
+        progress("input")
+        progress("environment")
+    last_stage = "environment"
     try:
         process = subprocess.Popen(
             command,
@@ -118,29 +161,69 @@ def run_generation_process(
     except OSError as error:
         measured = clock.snapshot()
         clock.stop()
+        progress_path.unlink(missing_ok=True)
         failure_report = _write_runner_failure(
             destination, FailureCode.ENVIRONMENT_UNAVAILABLE, str(error),
+            attempt_id=attempt_id,
             metrics=measured,
         )
         raise GenerateError(
-            failure_report["error"]["detail"], FailureCode.ENVIRONMENT_UNAVAILABLE
+            failure_report["error"]["detail"], FailureCode.ENVIRONMENT_UNAVAILABLE,
+            report=failure_report,
         ) from error
-    try:
-        _stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as error:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.communicate()
-        _remove_attempt_staging(destination.parent, attempt_id)
-        detail = f"processo Blender excedeu {timeout:g} segundos e foi encerrado"
-        measured = clock.snapshot()
-        clock.stop()
-        failure_report = _write_runner_failure(
-            destination, FailureCode.PROCESS_TIMEOUT, detail,
-            metrics=measured,
-        )
-        raise GenerateError(
-            failure_report["error"]["detail"], FailureCode.PROCESS_TIMEOUT
-        ) from error
+    deadline = time.monotonic() + timeout
+    while True:
+        drain_progress()
+        if cancellation is not None and cancellation.is_cancelled:
+            _stdout, stderr = _terminate_process(process)
+            drain_progress()
+            committed = None
+            if report_path.is_file() and (
+                previous_report is None or report_path.read_bytes() != previous_report
+            ):
+                try:
+                    committed = json.loads(report_path.read_text())
+                except (json.JSONDecodeError, OSError):
+                    committed = None
+            if committed is not None and committed.get("stage") == "published":
+                # Atomic commit is the terminal point: once visible, success
+                # wins even if cancellation was requested concurrently.
+                break
+            _remove_attempt_staging(destination.parent, attempt_id)
+            detail = "cancelamento solicitado durante a execução"
+            measured = clock.snapshot()
+            clock.stop()
+            progress_path.unlink(missing_ok=True)
+            cancelled_report = _write_runner_failure(
+                destination, FailureCode.EXECUTION_CANCELLED, detail,
+                attempt_id=attempt_id, metrics=measured, stage=last_stage,
+            )
+            raise GenerateError(
+                cancelled_report["error"]["detail"], FailureCode.EXECUTION_CANCELLED,
+                report=cancelled_report,
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _terminate_process(process)
+            _remove_attempt_staging(destination.parent, attempt_id)
+            detail = f"processo Blender excedeu {timeout:g} segundos e foi encerrado"
+            measured = clock.snapshot()
+            clock.stop()
+            progress_path.unlink(missing_ok=True)
+            timeout_report = _write_runner_failure(
+                destination, FailureCode.PROCESS_TIMEOUT, detail,
+                attempt_id=attempt_id, metrics=measured,
+            )
+            raise GenerateError(
+                timeout_report["error"]["detail"], FailureCode.PROCESS_TIMEOUT,
+                report=timeout_report,
+            )
+        try:
+            _stdout, stderr = process.communicate(timeout=min(0.05, remaining))
+            drain_progress()
+            break
+        except subprocess.TimeoutExpired:
+            continue
 
     report_path = destination / "report.json"
     report: dict | None = json.loads(report_path.read_text()) if report_path.is_file() else None
@@ -148,7 +231,11 @@ def run_generation_process(
         previous_report is None or report_path.read_bytes() != previous_report
     )
     try:
-        if process.returncode != 0:
+        committed_success = bool(
+            fresh and report is not None
+            and report.get("ok") is True and report.get("stage") == "published"
+        )
+        if process.returncode != 0 and not committed_success:
             if report is None or not fresh:
                 # No report from this attempt (occupied destination or a child
                 # that died before reporting): recover the structured code
@@ -165,24 +252,29 @@ def run_generation_process(
                     )
                 measured = clock.snapshot()
                 report = _write_runner_failure(
-                    destination, code, detail, metrics=measured
+                    destination, code, detail, attempt_id=attempt_id, metrics=measured
                 )
             try:
                 code = FailureCode(report["error"]["code"])
             except (KeyError, ValueError):
                 code = FailureCode.BUILD_FAILED
-            raise GenerateError(str(report["error"]["detail"]), code)
+            raise GenerateError(str(report["error"]["detail"]), code, report=report)
         if report is None or report.get("backend") != "bpy":
             detail = (
                 "processo oficial terminou sem relatório "
                 "produzido pelo backend bpy"
             )
             measured = clock.snapshot()
-            _write_runner_failure(
+            unavailable_report = _write_runner_failure(
                 destination, FailureCode.ENVIRONMENT_UNAVAILABLE, detail,
+                attempt_id=attempt_id,
                 metrics=measured,
             )
-            raise GenerateError(detail, FailureCode.ENVIRONMENT_UNAVAILABLE)
+            raise GenerateError(
+                detail, FailureCode.ENVIRONMENT_UNAVAILABLE,
+                report=unavailable_report,
+            )
         return report
     finally:
         clock.stop()
+        progress_path.unlink(missing_ok=True)

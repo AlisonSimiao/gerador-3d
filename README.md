@@ -47,6 +47,24 @@ recolhido ao terminar. O timeout também pode ser definido por
 `GERADOR_3D_TIMEOUT_SECONDS`; `GERADOR_3D_PYTHON` seleciona o Python 3.13 do
 ambiente Blender quando ele não for o executável que iniciou a CLI.
 
+## Executor de Tentativas
+
+`GenerationAttemptExecutor` é a interface Python de alto nível para uma
+Tentativa de Geração completa. Ele recebe uma `GenerationAttempt` e retorna
+um `PublishedResult`, `FailedAttempt` ou `CancelledAttempt`; callers não
+coordenam validação, Blender, exportação, reimportação ou publicação.
+
+Cada Tentativa possui identidade própria. Retry cria outra Tentativa; a
+Impressão Digital da Geração identifica a Spec Resolvida no mesmo ambiente e
+não é substituída por Job, Tentativa ou Seed. O Relatório de Validação registra
+essas identidades.
+
+Cancelamento é cooperativo no caller e forçado no processo isolado: antes do
+commit atômico encerra o grupo de processos, descarta staging e publica apenas
+o relatório quando possível. Depois do commit, o Resultado de Geração vence a
+corrida. Progresso pode ser observado localmente em etapas monotônicas; é
+opcional e nunca altera o desfecho.
+
 ## Testes e typecheck
 
 A suíte tem dois níveis:

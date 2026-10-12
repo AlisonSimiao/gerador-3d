@@ -19,7 +19,8 @@ from .registry import get_descriptor
 from .geometry.mesh import AnchorKind, MeshData
 from .schema import AnySpec, load_spec_file, spec_to_dict
 from .validators import check_glb
-from .failures import FailureCode, stage_for_code, structured_error
+from .failures import FailureCode
+from .reports import failure_report, success_report
 
 
 @dataclass
@@ -42,10 +43,12 @@ class GenerateError(RuntimeError):
     """A structured pipeline failure."""
     def __init__(self, message: str,
                  code: FailureCode = FailureCode.VALIDATION_FAILED,
-                 *, metrics: AttemptMetrics | None = None) -> None:
+                 *, metrics: AttemptMetrics | None = None,
+                 report: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code.value
         self.metrics = metrics if metrics is not None else AttemptMetrics()
+        self.report = report
 
 
 class _StageClock:
@@ -157,10 +160,15 @@ def _publish(stage: str, destination: str) -> None:
         shutil.rmtree(backup)
 
 
-def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
+def generate(
+    spec: AnySpec, out_dir: str, *, force: bool = False,
+    progress: Callable[[str], None] | None = None,
+) -> dict:
     """Produce an atomic official Result of Generation using Blender."""
     clock = _StageClock()
     try:
+        if progress is not None:
+            progress("environment")
         _ensure_official_platform()
         destination = os.path.abspath(out_dir)
         parent = os.path.dirname(destination)
@@ -174,6 +182,8 @@ def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
         stage = tempfile.mkdtemp(
             prefix=f".generation-{attempt_id}-", dir=parent
         )
+        if progress is not None:
+            progress("validation")
         mesh, checks = inspect(spec)
         clock.lap("inspect")
         failed = {k: v for k, v in checks.items() if not v["ok"]}
@@ -188,6 +198,8 @@ def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
                 ),
             )
         try:
+            if progress is not None:
+                progress("build")
             _run_stage(
                 "build", FailureCode.BUILD_FAILED,
                 lambda: _build_scene(mesh, spec.type), clock,
@@ -196,10 +208,14 @@ def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
             # Explicit internal→glTF conversion: mesh_to_bpy rotated the
             # IR into Blender space; export_yup=True + metric units emit
             # +Y up / meters.
+            if progress is not None:
+                progress("export")
             _run_stage(
                 "export", FailureCode.EXPORT_FAILED,
                 lambda: _export_glb(glb_path), clock,
             )
+            if progress is not None:
+                progress("reimport")
             checks["reimport"] = _run_stage(
                 "reimport", FailureCode.REIMPORT_FAILED,
                 lambda: _reimport_gate(glb_path, mesh), clock,
@@ -210,6 +226,8 @@ def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
                     FailureCode.REIMPORT_FAILED,
                 )
             from .preview import render_official_preview
+            if progress is not None:
+                progress("render")
             checks["preview"] = _run_stage(
                 "render", FailureCode.RENDER_FAILED,
                 lambda: render_official_preview(
@@ -222,11 +240,15 @@ def generate(spec: AnySpec, out_dir: str, *, force: bool = False) -> dict:
                 metrics=clock.snapshot(),
             )
             _write_report(stage, report)
+            if progress is not None:
+                progress("publication")
             _run_stage(
                 "publication", FailureCode.PUBLICATION_FAILED,
                 lambda: _publish(stage, destination), clock,
                 record_lap=False,
             )
+            if progress is not None:
+                progress("published")
             return report
         except Exception as error:
             shutil.rmtree(stage, ignore_errors=True)
@@ -541,29 +563,23 @@ def _reimport_gate(path: str, mesh: MeshData) -> dict:
 def _report(spec: AnySpec, mesh: MeshData, checks: dict, ok: bool, renderer: str,
             metrics: AttemptMetrics | None = None) -> dict:
     measured = metrics if metrics is not None else AttemptMetrics()
-    return {
-        "schema_version": 1, "status": "success" if ok else "failure", "ok": ok,
-        "stage": "published" if ok else "validation", "backend": renderer,
-        "renderer": renderer,
-        "environment": {
-            "worker": "0.1.0", "blender": _blender_version(),
-            "python": platform.python_version(),
-            "process_id": os.getpid(),
-            "render_profile": "medieval_lowpoly-v2",
-        },
-        "resolved_spec": spec_to_dict(spec), "spec": spec_to_dict(spec),
-        "tri_count": mesh.tri_count(),
-        "verts": len(mesh.vertices),
-        "faces": len(mesh.faces),
-        "materials": [m.name for m in mesh.materials],
-        "checks": checks,
-        "artifacts": ["model.glb", "preview.png", "report.json"]
-        if ok else ["report.json"],
-        "error": None, "metrics": {
+    resolved_spec = spec_to_dict(spec)
+    blender_version = _blender_version() or "unavailable"
+    return success_report(
+        attempt_id=os.environ.get("GERADOR_3D_ATTEMPT_ID", "local"),
+        resolved_spec=resolved_spec,
+        checks=checks,
+        blender=blender_version,
+        tri_count=mesh.tri_count(),
+        verts=len(mesh.vertices),
+        faces=len(mesh.faces),
+        materials=[material.name for material in mesh.materials],
+        metrics={
             "stages": dict(measured.stages)
             if measured.stages else {"total_seconds": 0.0},
-            "peak_memory_bytes": measured.peak_memory_bytes},
-    }
+            "peak_memory_bytes": measured.peak_memory_bytes,
+        },
+    )
 
 
 def _blender_version() -> str | None:
@@ -578,11 +594,17 @@ def _write_report(out_dir: str, report: dict) -> None:
         json.dump(report, f, indent=2, ensure_ascii=False)
 
 
-def generate_in_process_from_spec_file(spec_path: str, out_dir: str, *,
-                                       force: bool = False) -> dict:
+def generate_in_process_from_spec_file(
+    spec_path: str, out_dir: str, *, force: bool = False,
+    progress: Callable[[str], None] | None = None,
+) -> dict:
     clock = _StageClock()
     try:
-        return generate(load_spec_file(spec_path), out_dir, force=force)
+        if progress is not None:
+            progress("input")
+        return generate(
+            load_spec_file(spec_path), out_dir, force=force, progress=progress,
+        )
     except Exception as error:
         # Never damage an existing result. For every other attempt, leave only
         # the machine-readable report if its destination can be created.
@@ -598,22 +620,29 @@ def generate_in_process_from_spec_file(spec_path: str, out_dir: str, *,
                     measured = AttemptMetrics(
                         partial, measured.peak_memory_bytes
                     )
-                report = {"schema_version": 1, "status": "failure", "ok": False,
-                          "stage": stage_for_code(code),
-                          "backend": "bpy" if bpy_available() else None,
-                          "environment": {
-                              "worker": "0.1.0",
-                              "blender": _blender_version(),
-                              "process_id": os.getpid(),
-                              "python": platform.python_version(),
-                              "render_profile": "medieval_lowpoly-v2"},
-                          "resolved_spec": None, "checks": {},
-                          "artifacts": ["report.json"],
-                          "error": structured_error(code, str(error)),
-                          "metrics": {
-                              "stages": measured.stages,
-                              "peak_memory_bytes":
-                                  measured.peak_memory_bytes}}
+                input_value: object | None = None
+                if code is FailureCode.INPUT_INVALID:
+                    try:
+                        with open(spec_path, encoding="utf-8") as source:
+                            raw = source.read()
+                        try:
+                            input_value = json.loads(raw)
+                        except json.JSONDecodeError:
+                            input_value = raw
+                    except OSError:
+                        input_value = {"unreadable": True}
+                report = failure_report(
+                    attempt_id=os.environ.get("GERADOR_3D_ATTEMPT_ID", "local"),
+                    code=code,
+                    detail=str(error),
+                    input_value=input_value,
+                    backend="bpy" if bpy_available() else None,
+                    blender=_blender_version(),
+                    metrics={
+                        "stages": measured.stages,
+                        "peak_memory_bytes": measured.peak_memory_bytes,
+                    },
+                )
                 _write_report(out_dir, report)
             except OSError:
                 pass
@@ -633,9 +662,26 @@ def _code_for_in_process_error(error: Exception) -> FailureCode:
 def generate_from_spec_file(
     spec_path: str, out_dir: str, *, force: bool = False, timeout_seconds: float | None = None
 ) -> dict:
-    """Run one official generation in a fresh process."""
-    from .process_runner import run_generation_process
+    """Compatibility wrapper around the GenerationAttemptExecutor seam."""
+    from pathlib import Path
 
-    return run_generation_process(
-        spec_path, out_dir, force=force, timeout_seconds=timeout_seconds
+    from .attempts import (
+        ExistingResultPolicy,
+        FailedAttempt,
+        GenerationAttempt,
+        GenerationAttemptExecutor,
+        new_attempt_id,
+        read_untrusted_spec_file,
     )
+
+    outcome = GenerationAttemptExecutor().execute(GenerationAttempt(
+        attempt_id=new_attempt_id(),
+        spec=read_untrusted_spec_file(spec_path),
+        destination=Path(out_dir),
+        existing_result=(ExistingResultPolicy.REPLACE if force else ExistingResultPolicy.REJECT),
+        timeout_seconds=timeout_seconds,
+    ))
+    if isinstance(outcome, FailedAttempt):
+        error = outcome.report["error"]
+        raise GenerateError(str(error["detail"]), FailureCode(str(error["code"])))
+    return outcome.report

@@ -21,6 +21,7 @@ from blender_worker.schema import load_spec_file
 #: Stable top-level fields every report carries (ADR 0007 + ticket 13).
 REQUIRED_TOP_LEVEL = frozenset({
     "schema_version",
+    "attempt_id",
     "status",
     "stage",
     "backend",
@@ -57,6 +58,7 @@ def assert_report_contract(report: dict) -> None:
     if report["ok"]:
         assert report["error"] is None
         assert report["resolved_spec"] is not None
+        assert report["generation_fingerprint"].startswith("sha256:")
     else:
         assert "report.json" in report["artifacts"]
         error = report["error"]
@@ -104,6 +106,7 @@ def test_input_failure_report_carries_measured_metrics(tmp_path: Path) -> None:
     assert report["status"] == "failure"
     assert report["stage"] == "input"
     assert report["error"]["code"] == "input.invalid"
+    assert report["input_hash"].startswith("sha256:")
     # A failure attempt still measures its own duration and peak (never 0/{}).
     assert "total_seconds" in report["metrics"]["stages"]
     assert report["metrics"]["peak_memory_bytes"] > 0
