@@ -3,6 +3,7 @@
 import json
 import math
 import os
+from dataclasses import fields
 from pathlib import Path
 import threading
 import time
@@ -13,6 +14,7 @@ from blender_worker.attempts import (
     AttemptId,
     CancellationToken,
     CancelledAttempt,
+    ExistingResultPolicy,
     FailedAttempt,
     GenerationAttempt,
     GenerationAttemptExecutor,
@@ -21,6 +23,7 @@ from blender_worker.attempts import (
     PublishedResult,
     new_attempt_id,
 )
+from blender_worker.export import GenerateError, generate_from_spec_file
 from blender_worker.failures import REPORT_STAGES
 from blender_worker.reports import attempt_storage_token, environment
 
@@ -117,6 +120,238 @@ def test_json_lines_progress_adapter_is_local_and_structured(tmp_path: Path) -> 
     assert json.loads(path.read_text()) == {
         "attempt_id": "attempt-jsonl", "sequence": 1, "stage": "input",
     }
+
+
+def test_invalid_execution_options_are_rejected_before_any_process_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = tmp_path / "launched"
+    executable = tmp_path / "marker-python"
+    executable.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("GERADOR_3D_PYTHON", str(executable))
+    monkeypatch.setenv("GERADOR_3D_TIMEOUT_SECONDS", "not-a-number")
+
+    with pytest.raises(ValueError, match="finito e positivo"):
+        GenerationAttemptExecutor().execute(GenerationAttempt(
+            AttemptId("attempt-bad-default-timeout"), _valid_house(), tmp_path / "result",
+        ))
+
+    assert not marker.exists()
+    assert not (tmp_path / "result").exists()
+
+
+def test_previous_entry_point_delegates_without_generation_logic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The transitional wrapper only translates the typed outcome it receives."""
+    seen: list[GenerationAttempt] = []
+    outcome = PublishedResult(
+        AttemptId("attempt-wrapper"), tmp_path / "result", "sha256:wrapper",
+        {"ok": True, "stage": "published", "tri_count": 12},
+    )
+
+    def fake_execute(_self: object, attempt: GenerationAttempt) -> PublishedResult:
+        seen.append(attempt)
+        return outcome
+
+    monkeypatch.setattr(GenerationAttemptExecutor, "execute", fake_execute)
+
+    report = generate_from_spec_file(
+        "specs/house_default.json", str(tmp_path / "result"), timeout_seconds=12.5,
+    )
+
+    assert report == outcome.report
+    assert len(seen) == 1
+    assert seen[0].timeout_seconds == 12.5
+    assert seen[0].existing_result is ExistingResultPolicy.REJECT
+    assert seen[0].destination == tmp_path / "result"
+    assert seen[0].spec == _valid_house()
+
+
+def test_previous_entry_point_makes_replacement_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[GenerationAttempt] = []
+
+    def fake_execute(_self: object, attempt: GenerationAttempt) -> PublishedResult:
+        seen.append(attempt)
+        return PublishedResult(attempt.attempt_id, attempt.destination, "sha256:x", {"ok": True})
+
+    monkeypatch.setattr(GenerationAttemptExecutor, "execute", fake_execute)
+
+    generate_from_spec_file("specs/house_default.json", str(tmp_path / "result"), force=True)
+
+    assert seen[0].existing_result is ExistingResultPolicy.REPLACE
+
+
+def test_previous_entry_point_raises_the_typed_failure_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_execute(_self: object, attempt: GenerationAttempt) -> FailedAttempt:
+        return FailedAttempt(attempt.attempt_id, {
+            "ok": False, "error": {"code": "reimport.failed", "detail": "malformed"},
+        })
+
+    monkeypatch.setattr(GenerationAttemptExecutor, "execute", fake_execute)
+
+    with pytest.raises(GenerateError) as raised:
+        generate_from_spec_file("specs/house_default.json", str(tmp_path / "result"))
+
+    assert raised.value.code == "reimport.failed"
+
+
+def test_previous_entry_point_never_reports_cancellation_as_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled attempt is not a result: the legacy contract raises."""
+
+    def fake_execute(_self: object, attempt: GenerationAttempt) -> CancelledAttempt:
+        return CancelledAttempt(attempt.attempt_id, {
+            "ok": False, "error": {"code": "execution.cancelled", "detail": "cancelado"},
+        })
+
+    monkeypatch.setattr(GenerationAttemptExecutor, "execute", fake_execute)
+
+    with pytest.raises(GenerateError) as raised:
+        generate_from_spec_file("specs/house_default.json", str(tmp_path / "result"))
+
+    assert raised.value.code == "execution.cancelled"
+
+
+def test_attempt_input_carries_only_the_documented_execution_data(
+    tmp_path: Path,
+) -> None:
+    assert {field.name for field in fields(GenerationAttempt)} == {
+        "attempt_id", "spec", "destination", "existing_result",
+        "timeout_seconds", "cancellation",
+    }
+    attempt = GenerationAttempt(
+        AttemptId("attempt-fields"), _valid_house(), tmp_path / "result",
+    )
+    # No pipeline stage, queue or infrastructure handle is caller-supplied.
+    assert attempt.existing_result is ExistingResultPolicy.REJECT
+    assert attempt.timeout_seconds is None
+    assert attempt.cancellation is None
+
+
+def test_executor_exposes_one_public_execution_operation() -> None:
+    public_operations = sorted(
+        name for name in dir(GenerationAttemptExecutor)
+        if not name.startswith("_") and callable(getattr(GenerationAttemptExecutor, name))
+    )
+
+    assert public_operations == ["execute"]
+
+
+def _occupy(destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    for name, content in {
+        "model.glb": b"existing-asset",
+        "preview.png": b"existing-preview",
+        "report.json": b'{"existing": true}',
+    }.items():
+        (destination / name).write_bytes(content)
+
+
+def _assert_untouched(destination: Path) -> None:
+    assert sorted(path.name for path in destination.iterdir()) == [
+        "model.glb", "preview.png", "report.json",
+    ]
+    assert (destination / "model.glb").read_bytes() == b"existing-asset"
+    assert (destination / "preview.png").read_bytes() == b"existing-preview"
+    assert (destination / "report.json").read_bytes() == b'{"existing": true}'
+
+
+def _publishing_executable(tmp_path: Path, body: str) -> Path:
+    executable = tmp_path / "controlled-python"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "out=\n"
+        "forced=no\n"
+        "while [ $# -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"--out\" ]; then shift; out=$1; fi\n"
+        "  if [ \"$1\" = \"--force\" ]; then forced=yes; fi\n"
+        "  shift\n"
+        "done\n"
+        "publish_report() {\n"
+        "  printf '{\"ok\":true,\"stage\":\"published\",\"backend\":\"bpy\","
+        "\"attempt_id\":\"%s\",\"generation_fingerprint\":\"sha256:replaced\","
+        "\"resolved_spec\":{\"spec_version\":1,\"type\":\"house\",\"seed\":42},"
+        "\"artifacts\":[\"model.glb\",\"preview.png\",\"report.json\"]}'"
+        " \"$GERADOR_3D_ATTEMPT_ID\"\n"
+        "}\n" + body
+    )
+    executable.chmod(0o755)
+    return executable
+
+
+def _reject_when_occupied() -> str:
+    return (
+        'if [ -n "$(ls -A "$out" 2>/dev/null)" ] && [ "$forced" != "yes" ]; then\n'
+        "  printf 'publication.failed: destino ocupado: %s\\n' \"$out\" >&2\n"
+        "  exit 1\n"
+        "fi\n"
+    )
+
+
+def test_occupied_destination_is_rejected_by_default_with_the_publication_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "result"
+    _occupy(destination)
+    # A controlled child standing in for the official pipeline's occupied
+    # destination policy: it refuses to overwrite without an explicit request.
+    monkeypatch.setenv("GERADOR_3D_PYTHON", str(_publishing_executable(
+        tmp_path,
+        _reject_when_occupied()
+        + 'mkdir -p "$out"\n'
+        + "printf 'glb' > \"$out/model.glb\"\n"
+        + "printf 'png' > \"$out/preview.png\"\n"
+        + 'publish_report > "$out/report.json"\n',
+    )))
+
+    outcome = GenerationAttemptExecutor().execute(GenerationAttempt(
+        AttemptId("attempt-reject-occupied"), _valid_house(), destination,
+    ))
+
+    assert isinstance(outcome, FailedAttempt)
+    assert outcome.report["error"]["code"] == "publication.failed"
+    assert outcome.report["stage"] == "publication"
+    _assert_untouched(destination)
+
+
+def test_explicit_replacement_replaces_the_whole_result_atomically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "result"
+    _occupy(destination)
+    monkeypatch.setenv("GERADOR_3D_PYTHON", str(_publishing_executable(
+        tmp_path,
+        _reject_when_occupied()
+        + 'rm -f "$out/model.glb" "$out/preview.png" "$out/report.json"\n'
+        + 'mkdir -p "$out"\n'
+        + "printf 'new-glb' > \"$out/model.glb\"\n"
+        + "printf 'new-png' > \"$out/preview.png\"\n"
+        + 'publish_report > "$out/report.json"\n',
+    )))
+
+    outcome = GenerationAttemptExecutor().execute(GenerationAttempt(
+        AttemptId("attempt-replace-occupied"), _valid_house(), destination,
+        existing_result=ExistingResultPolicy.REPLACE,
+    ))
+
+    assert isinstance(outcome, PublishedResult)
+    assert outcome.fingerprint == "sha256:replaced"
+    assert outcome.report["attempt_id"] == "attempt-replace-occupied"
+    assert sorted(path.name for path in destination.iterdir()) == [
+        "model.glb", "preview.png", "report.json",
+    ]
+    assert (destination / "model.glb").read_bytes() == b"new-glb"
+    assert (destination / "preview.png").read_bytes() == b"new-png"
+    assert json.loads((destination / "report.json").read_text())["stage"] == "published"
+    assert not list(tmp_path.glob(".generation-*"))
+    assert not list(tmp_path.glob(".attempt-*"))
 
 
 def _valid_house() -> dict[str, object]:

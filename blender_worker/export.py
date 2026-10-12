@@ -672,6 +672,7 @@ def generate_from_spec_file(
     from pathlib import Path
 
     from .attempts import (
+        CancelledAttempt,
         ExistingResultPolicy,
         FailedAttempt,
         GenerationAttempt,
@@ -687,7 +688,9 @@ def generate_from_spec_file(
         existing_result=(ExistingResultPolicy.REPLACE if force else ExistingResultPolicy.REJECT),
         timeout_seconds=timeout_seconds,
     ))
-    if isinstance(outcome, FailedAttempt):
+    # Cancellation is not a Result of Generation: the legacy entry point has no
+    # cancelled outcome, so it must raise like any other unsuccessful attempt.
+    if isinstance(outcome, (FailedAttempt, CancelledAttempt)):
         error = outcome.report["error"]
         raise GenerateError(str(error["detail"]), FailureCode(str(error["code"])))
     return outcome.report

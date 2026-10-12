@@ -29,11 +29,18 @@ class Cancellation(Protocol):
 
 
 def _timeout_seconds(explicit: float | None) -> float:
+    invalid = ValueError("timeout_seconds deve ser finito e positivo")
     value = explicit
     if value is None:
-        value = float(os.environ.get("GERADOR_3D_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
+        try:
+            value = float(os.environ.get("GERADOR_3D_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS))
+        except (TypeError, ValueError):
+            # A misconfigured operational default is interface misuse too, and
+            # it must be rejected with the same documented message as an
+            # explicit invalid timeout, before any child process starts.
+            raise invalid from None
     if not math.isfinite(value) or value <= 0:
-        raise ValueError("timeout_seconds deve ser finito e positivo")
+        raise invalid
     return value
 
 
