@@ -19,6 +19,7 @@ from blender_worker.attempts import (
     InMemoryProgressObserver,
     JsonLinesProgressObserver,
     PublishedResult,
+    new_attempt_id,
 )
 from blender_worker.reports import attempt_storage_token, environment
 
@@ -30,6 +31,20 @@ def test_timeout_must_be_finite_and_positive(tmp_path: Path, timeout: float) -> 
             AttemptId("attempt-bad-timeout"), _valid_house(), tmp_path / "result",
             timeout_seconds=timeout,
         )
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_attempt_identity_must_be_opaque_and_non_empty(blank: str) -> None:
+    with pytest.raises(ValueError, match="não pode ser vazio"):
+        AttemptId(blank)
+
+
+def test_generated_attempt_identities_are_distinct() -> None:
+    identities = {new_attempt_id() for _ in range(100)}
+
+    assert len(identities) == 100
+    # The identity is opaque: it carries no Spec, Seed or fingerprint content.
+    assert all(identity.value for identity in identities)
 
 
 def test_invalid_input_returns_a_correlated_safe_failure(tmp_path: Path) -> None:

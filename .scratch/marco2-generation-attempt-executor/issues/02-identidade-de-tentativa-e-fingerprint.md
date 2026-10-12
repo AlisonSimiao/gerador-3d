@@ -19,3 +19,9 @@
 ## Answer
 
 Relatórios agora correlacionam a Tentativa; sucessos incluem fingerprint canônico e entradas inválidas incluem somente hash segura. A integração provou identidades distintas com fingerprint idêntico para a mesma geração lógica.
+
+Verificação contra o código existente (`blender_worker/attempts.py`, `blender_worker/reports.py`), sem alterar a implementação: `AttemptId` recusa valores vazios/brancos e `new_attempt_id()` deriva `uuid4`; `generation_fingerprint` hasheia `resolved_spec` + `WORKER_VERSION` + versão do Blender + `RENDER_PROFILE` com chaves ordenadas; `success_report` grava `attempt_id` e `generation_fingerprint`; `failure_report` grava `attempt_id` e `input_hash` (`resolved_spec` nulo) sem copiar a entrada.
+
+Lacuna real fechada: os critérios de derivação e independência da Impressão Digital só eram provados por um teste marcado `integration` (que exige Blender). Adicionados testes rápidos no seam de contrato do relatório: literal conhecido-bom do digest para um ambiente fixado (detecta mudança acidental nos insumos da derivação), sensibilidade a cada versão relevante, equivalência entre representações da entrada que resolvem para a mesma Spec Resolvida (incluindo ordem de chaves), independência de `attempt_id`, e Seed como insumo e não como identidade. Adicionados ainda: `attempt_id` opaco/não vazio, unicidade das identidades geradas, e o contrato `attempt_id` + `input_hash` do relatório de entrada inválida sem `generation_fingerprint` e sem a entrada rejeitada. ADR 0014 passou a nomear `generation_fingerprint` e `input_hash` para ancorar o contrato documentado.
+
+Nenhuma mudança em geometria, Preview, publicação atômica ou significado de campos existentes.
