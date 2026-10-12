@@ -67,7 +67,7 @@ def test_stage_render_produces_the_versioned_four_view_board(tmp_path: Path) -> 
     assert check == {
         "ok": True,
         "detail": "4 vistas renderizadas com BLENDER_EEVEE",
-        "profile": "medieval_lowpoly-v1",
+        "profile": "medieval_lowpoly-v2",
         "views": ["perspective", "front", "side", "rear"],
         "size": 1024,
     }

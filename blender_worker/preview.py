@@ -41,6 +41,7 @@ def render_official_preview(path: str) -> dict[str, Any]:
     center = (low + high) / 2
     extent = high - low
     span = max(extent.x, extent.y, extent.z, 0.001)
+    reference_span = profile["reference_span"]
 
     camera_data = bpy.data.cameras.new("preview_camera")
     camera = bpy.data.objects.new("preview_camera", camera_data)
@@ -49,7 +50,10 @@ def render_official_preview(path: str) -> dict[str, Any]:
 
     for light_profile in profile["lights"]:
         data = bpy.data.lights.new(light_profile["name"], type="AREA")
-        data.energy = light_profile["energy"]
+        # Light distance and emitting area scale with the Asset's bounding span.
+        # Area-light power must therefore scale quadratically to preserve the
+        # same illuminance and exposure for geometrically similar Assets.
+        data.energy = light_profile["energy"] * (span / reference_span) ** 2
         data.color = tuple(light_profile["color"])
         data.shape = "DISK"
         data.size = span * light_profile["size_factor"]

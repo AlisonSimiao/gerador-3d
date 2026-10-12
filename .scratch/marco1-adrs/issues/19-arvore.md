@@ -17,3 +17,9 @@ Contrato v1 já exato em `schema.py`/`registry.py` (faixas e defaults ADR 0009, 
 Seed observável (clustered varia 4–5 copas/offsets; mesma seed = IR idêntica) com testes de variação e reprodução.
 Matriz `acceptance/tree/` com 7 specs (3 formas × 3 paletas, limites mín/máx, seed-variant) + `baseline.json` todo `ready-for-human`, aprovador nulo; previews candidatos em `review/` via Blender Eevee oficial.
 Orçamento provado: pior variante 126 tris de 5000; suíte rápida 136 passed, integração da matriz 2 passed, mypy limpo.
+
+## Comments
+
+Em 2026-10-12, o revisor humano (`user`) aprovou os 7 previews da matriz de
+Árvore regenerados com o perfil `medieval_lowpoly-v2`; o baseline registra a
+aprovação por Spec.

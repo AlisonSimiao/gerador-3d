@@ -49,7 +49,7 @@ def test_official_preview_uses_versioned_eevee_four_view_profile(tmp_path: Path)
     assert report["checks"]["preview"] == {
         "ok": True,
         "detail": "4 vistas renderizadas com BLENDER_EEVEE",
-        "profile": "medieval_lowpoly-v1",
+        "profile": "medieval_lowpoly-v2",
         "views": ["perspective", "front", "side", "rear"],
         "size": 1024,
     }

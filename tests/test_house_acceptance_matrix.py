@@ -75,16 +75,17 @@ def test_matrix_specs_are_deterministic_within_budget_and_validators_green() -> 
             assert result["ok"] is True, f"{path.name}:{name} falhou: {result.get('detail')}"
 
 
-def test_baseline_metadata_is_ready_for_human_not_approved() -> None:
+def test_baseline_metadata_records_human_approval() -> None:
     baseline = json.loads((HOUSE_DIR / "baseline.json").read_text())
     assert BASELINE_REQUIRED <= set(baseline), "metadados de baseline incompletos"
-    assert baseline["status"] == "ready-for-human"
-    assert baseline["approver"] is None
-    assert baseline["approved_at"] is None
+    assert baseline["status"] == "approved"
+    assert baseline["approver"] == "user"
+    assert baseline["approved_at"] == "2026-10-12"
 
     stems = {p.stem for p in _matrix_specs()}
     assert set(baseline["specs"]) == stems, "baseline deve listar cada spec da matriz"
     for stem, entry in baseline["specs"].items():
-        assert entry["status"] == "ready-for-human", f"{stem}: só humano aprova"
-        assert entry["approver"] is None, f"{stem}: aprovador deve ser nulo até revisão"
+        assert entry["status"] == "approved", f"{stem}: aprovação humana não registrada"
+        assert entry["approver"] == "user", f"{stem}: aprovador incorreto"
+        assert entry["approved_at"] == "2026-10-12", f"{stem}: data de aprovação incorreta"
         assert entry["spec"] == f"{stem}.json"

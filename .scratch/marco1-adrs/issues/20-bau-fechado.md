@@ -20,3 +20,9 @@ Matriz com 6 specs (canonical, 2 opções, 2 limites, 1 seed-variant) e
 baseline.json ready-for-human; previews candidatos via Blender Eevee em
 acceptance/chest/review/ aguardam aprovação humana. Fast 161 verdes,
 integração da matriz verde, mypy limpo.
+
+## Comments
+
+Em 2026-10-12, o revisor humano (`user`) aprovou os 6 previews da matriz de
+Baú regenerados com o perfil `medieval_lowpoly-v2`; o baseline registra a
+aprovação por Spec.

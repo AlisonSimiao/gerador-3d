@@ -1,1 +1,81 @@
-{"approved_at":null,"approver":null,"blender_version":"5.2.2","render_profile":"medieval_lowpoly-v1","spec_version":1,"specs":{"canonical":{"approved_at":null,"approver":null,"blender_version":"5.2.2","render_profile":"medieval_lowpoly-v1","spec":"canonical.json","spec_version":1,"status":"ready-for-human","worker_version":"0.1.0"},"limit-max":{"approved_at":null,"approver":null,"blender_version":"5.2.2","render_profile":"medieval_lowpoly-v1","spec":"limit-max.json","spec_version":1,"status":"ready-for-human","worker_version":"0.1.0"},"limit-min":{"approved_at":null,"approver":null,"blender_version":"5.2.2","render_profile":"medieval_lowpoly-v1","spec":"limit-min.json","spec_version":1,"status":"ready-for-human","worker_version":"0.1.0"},"opt-clustered-autumn":{"approved_at":null,"approver":null,"blender_version":"5.2.2","render_profile":"medieval_lowpoly-v1","spec":"opt-clustered-autumn.json","spec_version":1,"status":"ready-for-human","worker_version":"0.1.0"},"opt-conical-dark-green":{"approved_at":null,"approver":null,"blender_version":"5.2.2","render_profile":"medieval_lowpoly-v1","spec":"opt-conical-dark-green.json","spec_version":1,"status":"ready-for-human","worker_version":"0.1.0"},"opt-round-autumn":{"approved_at":null,"approver":null,"blender_version":"5.2.2","render_profile":"medieval_lowpoly-v1","spec":"opt-round-autumn.json","spec_version":1,"status":"ready-for-human","worker_version":"0.1.0"},"seed-variant":{"approved_at":null,"approver":null,"blender_version":"5.2.2","render_profile":"medieval_lowpoly-v1","spec":"seed-variant.json","spec_version":1,"status":"ready-for-human","worker_version":"0.1.0"}},"status":"ready-for-human","worker_version":"0.1.0"}
+{
+  "approved_at": "2026-10-12",
+  "approver": "user",
+  "blender_version": "5.2.2",
+  "render_profile": "medieval_lowpoly-v2",
+  "spec_version": 1,
+  "specs": {
+    "canonical": {
+      "approved_at": "2026-10-12",
+      "approver": "user",
+      "blender_version": "5.2.2",
+      "render_profile": "medieval_lowpoly-v2",
+      "spec": "canonical.json",
+      "spec_version": 1,
+      "status": "approved",
+      "worker_version": "0.1.0"
+    },
+    "limit-max": {
+      "approved_at": "2026-10-12",
+      "approver": "user",
+      "blender_version": "5.2.2",
+      "render_profile": "medieval_lowpoly-v2",
+      "spec": "limit-max.json",
+      "spec_version": 1,
+      "status": "approved",
+      "worker_version": "0.1.0"
+    },
+    "limit-min": {
+      "approved_at": "2026-10-12",
+      "approver": "user",
+      "blender_version": "5.2.2",
+      "render_profile": "medieval_lowpoly-v2",
+      "spec": "limit-min.json",
+      "spec_version": 1,
+      "status": "approved",
+      "worker_version": "0.1.0"
+    },
+    "opt-clustered-autumn": {
+      "approved_at": "2026-10-12",
+      "approver": "user",
+      "blender_version": "5.2.2",
+      "render_profile": "medieval_lowpoly-v2",
+      "spec": "opt-clustered-autumn.json",
+      "spec_version": 1,
+      "status": "approved",
+      "worker_version": "0.1.0"
+    },
+    "opt-conical-dark-green": {
+      "approved_at": "2026-10-12",
+      "approver": "user",
+      "blender_version": "5.2.2",
+      "render_profile": "medieval_lowpoly-v2",
+      "spec": "opt-conical-dark-green.json",
+      "spec_version": 1,
+      "status": "approved",
+      "worker_version": "0.1.0"
+    },
+    "opt-round-autumn": {
+      "approved_at": "2026-10-12",
+      "approver": "user",
+      "blender_version": "5.2.2",
+      "render_profile": "medieval_lowpoly-v2",
+      "spec": "opt-round-autumn.json",
+      "spec_version": 1,
+      "status": "approved",
+      "worker_version": "0.1.0"
+    },
+    "seed-variant": {
+      "approved_at": "2026-10-12",
+      "approver": "user",
+      "blender_version": "5.2.2",
+      "render_profile": "medieval_lowpoly-v2",
+      "spec": "seed-variant.json",
+      "spec_version": 1,
+      "status": "approved",
+      "worker_version": "0.1.0"
+    }
+  },
+  "status": "approved",
+  "worker_version": "0.1.0"
+}

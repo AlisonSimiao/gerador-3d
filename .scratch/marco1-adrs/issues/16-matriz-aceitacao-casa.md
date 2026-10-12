@@ -4,12 +4,12 @@
 
 **Blocked by:** 07: Casa — variação observável por Seed, 12: Publicação atômica do Resultado de Geração, 13: Relatório de Validação versionado
 
-**Status:** ready-for-human
+**Status:** resolved
 
 - [x] Matriz de Specs da Casa versionada, cobrindo canônico, opções, limites, Seeds e combinações de risco
 - [x] Previews aprovados versionados com metadados de baseline (aprovador, data, versões de Spec/worker/Blender/perfil)
 - [x] Teste automatizado regenera a matriz e compara propriedades objetivas (determinismo, orçamento, validadores)
-- [ ] Aprovação visual humana registrada explicitamente — marcada `ready-for-human`, não automatizável
+- [x] Aprovação visual humana registrada explicitamente
 
 ## Comments
 
@@ -17,6 +17,10 @@ Aprovação visual pendente de humano: `acceptance/house/review/<spec>/preview.p
 (9 candidatos gerados pelo caminho oficial Blender Eevee) aguardam revisão;
 `baseline.json` segue `ready-for-human` com aprovador nulo. Nada foi
 auto-aprovado. GLBs nunca versionados.
+
+Em 2026-10-12, o revisor humano (`user`) aprovou a matriz inteira após a
+regeneração no perfil `medieval_lowpoly-v2`. Os 9 registros em
+`acceptance/house/baseline.json` estão `approved`, com aprovador e data.
 
 ## Answer
 

@@ -21,3 +21,9 @@ reprodução idêntica. Matriz `acceptance/sword/` com 8 specs (canonical,
 todo `ready-for-human` com aprovador nulo, e `review/` com 8 `preview.png`
 1024px gerados pela via oficial Blender. Orçamento folgado: pico de 164 tris
 contra 2000. Fast 151 green, integração da matriz green (~7 min), mypy limpo.
+
+## Comments
+
+Em 2026-10-12, o revisor humano (`user`) aprovou os 8 previews da matriz de
+Espada regenerados com o perfil `medieval_lowpoly-v2`; o baseline registra a
+aprovação por Spec.
