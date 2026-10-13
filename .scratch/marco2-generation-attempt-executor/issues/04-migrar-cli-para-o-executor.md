@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — GenerationAttemptExecutor e desfechos tipados.
 
-**Status:** resolved
+**Status:** ready-for-agent
 
 - [x] O comando oficial cria uma Tentativa e chama exclusivamente o executor de alto nível.
 - [x] A forma do comando e os argumentos existentes continuam aceitos, incluindo destino, `--force` e timeout configurável.

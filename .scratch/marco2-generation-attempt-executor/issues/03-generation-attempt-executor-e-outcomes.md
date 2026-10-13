@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — ADR de cancelamento e contratos terminais; 02 — Identidade da Tentativa e Impressão Digital da Geração.
 
-**Status:** resolved
+**Status:** ready-for-agent
 
 - [x] `GenerationAttempt` reúne identidade da Tentativa, Spec não confiável, destino confiável, política de destino ocupado e timeout opcional válido.
 - [x] A interface rejeita opções de execução inválidas antes de iniciar o processo Blender.

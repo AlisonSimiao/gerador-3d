@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** resolved
+**Status:** ready-for-agent
 
 - [x] Cada Tentativa recebe uma identidade opaca, não vazia e independente de Job, Seed e Impressão Digital da Geração.
 - [x] Duas Tentativas da mesma Spec mantêm identidades distintas mesmo quando produzem a mesma Impressão Digital.

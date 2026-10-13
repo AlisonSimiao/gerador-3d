@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — Migrar a CLI para GenerationAttemptExecutor; 05 — Timeout, cancelamento e cleanup terminal; 06 — Relatório de Validação unificado; 07 — Progresso observável opcional.
 
-**Status:** resolved
+**Status:** ready-for-agent
 
 - [x] A suíte rápida cobre contratos do executor, identidades, fingerprints, falhas, cancelamento, timeout, cleanup, relatório e progresso sem alegar Resultado oficial.
 - [x] A suíte oficial executa o Blender suportado em processo limpo e comprova construção, exportação, reimportação, Preview e publicação atômica através do executor.
@@ -21,4 +21,4 @@
 
 ## Answer
 
-Typecheck limpo, 205 testes rápidos verdes e suíte completa com 234 testes verdes e 1 skip do Khronos Validator externo não configurado. As integrações reais preservaram os quatro Tipos, reimportação, Preview e publicação.
+Typecheck limpo, 241 testes rápidos verdes e suíte completa com 270 testes verdes e 1 skip do Khronos Validator externo não configurado. As integrações reais preservaram os quatro Tipos, reimportação, Preview e publicação.

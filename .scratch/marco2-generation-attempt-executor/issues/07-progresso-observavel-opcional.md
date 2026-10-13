@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — ADR de cancelamento e contratos terminais; 03 — GenerationAttemptExecutor e desfechos tipados; 06 — Relatório de Validação unificado.
 
-**Status:** resolved
+**Status:** ready-for-agent
 
 - [x] O executor funciona normalmente sem observer configurado.
 - [x] Cada evento contém a identidade da Tentativa, sequência estritamente crescente e uma etapa do vocabulário versionado compartilhado com o relatório.

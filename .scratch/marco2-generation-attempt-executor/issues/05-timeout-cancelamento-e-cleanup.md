@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — ADR de cancelamento e contratos terminais; 03 — GenerationAttemptExecutor e desfechos tipados.
 
-**Status:** resolved
+**Status:** ready-for-agent
 
 - [x] Um pedido de cancelamento anterior ao lançamento retorna `CancelledAttempt` sem iniciar Blender.
 - [x] Um pedido durante a execução encerra e recolhe todo o grupo do processo isolado e retorna `CancelledAttempt`.

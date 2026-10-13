@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** resolved
+**Status:** ready-for-agent
 
 - [x] Um novo ADR define `PublishedResult`, `FailedAttempt` e `CancelledAttempt` como os três desfechos terminais mutuamente exclusivos de uma Tentativa.
 - [x] O ADR estabelece que falhas esperadas e cancelamento produzem um Relatório de Validação sempre que seu destino puder ser criado.

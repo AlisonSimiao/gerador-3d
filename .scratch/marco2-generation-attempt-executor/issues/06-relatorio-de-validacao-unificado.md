@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — Identidade da Tentativa e Impressão Digital da Geração; 03 — GenerationAttemptExecutor e desfechos tipados; 05 — Timeout, cancelamento e cleanup terminal.
 
-**Status:** resolved
+**Status:** ready-for-agent
 
 - [x] Um único módulo de construção concentra schema, status, etapa, backend, ambiente, identidade, proveniência, checks, artefatos, erro e métricas.
 - [x] Sucesso, entrada inválida, ambiente indisponível, timeout, cancelamento e falhas de cada etapa atravessam essa construção comum.
