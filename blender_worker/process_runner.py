@@ -17,8 +17,13 @@ from collections.abc import Callable
 from typing import Protocol
 
 from .export import AttemptMetrics, GenerateError, _StageClock
-from .failures import REPORT_STAGES, FailureCode
-from .reports import attempt_storage_token, failure_report, publish_failure_report
+from .failures import REPORT_STAGES, FailureCode, stage_for_code
+from .reports import (
+    attempt_backup_path,
+    attempt_storage_token,
+    failure_report,
+    publish_failure_report,
+)
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
 
@@ -49,6 +54,23 @@ def _remove_attempt_staging(parent: Path, attempt_id: str) -> None:
     for path in parent.glob(f".generation-{token}-*"):
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
+
+
+def _recover_interrupted_replacement(destination: Path, attempt_id: str) -> None:
+    backup = attempt_backup_path(destination, attempt_id)
+    if not backup.exists():
+        return
+    if destination.exists():
+        shutil.rmtree(destination, ignore_errors=True)
+    os.replace(backup, destination)
+
+
+def _discard_uncommitted_destination(
+    destination: Path, attempt_id: str, *, destination_was_occupied: bool,
+) -> None:
+    backup_exists = attempt_backup_path(destination, attempt_id).exists()
+    if destination.exists() and (not destination_was_occupied or backup_exists):
+        shutil.rmtree(destination, ignore_errors=True)
 
 
 def _code_from_stderr(stderr: str) -> tuple[FailureCode, str] | None:
@@ -126,11 +148,19 @@ def _read_fresh_report(
 
 
 def _cleanup_attempt(
-    *, parent: Path, attempt_id: str, progress_path: Path, clock: _StageClock,
+    *, destination: Path, attempt_id: str, progress_path: Path, clock: _StageClock,
 ) -> None:
-    _remove_attempt_staging(parent, attempt_id)
+    _remove_attempt_staging(destination.parent, attempt_id)
+    _recover_interrupted_replacement(destination, attempt_id)
     progress_path.unlink(missing_ok=True)
     clock.stop()
+
+
+def _furthest_stage(current: str, code: FailureCode) -> str:
+    mapped = stage_for_code(code)
+    if current not in REPORT_STAGES or mapped not in REPORT_STAGES:
+        return mapped
+    return max((current, mapped), key=REPORT_STAGES.index)
 
 
 def run_generation_process(
@@ -200,6 +230,21 @@ def run_generation_process(
     )
     if progress is not None:
         progress("input")
+    if cancellation is not None and cancellation.is_cancelled:
+        measured = clock.snapshot()
+        _cleanup_attempt(
+            destination=destination, attempt_id=attempt_id,
+            progress_path=progress_path, clock=clock,
+        )
+        cancelled_report = _write_runner_failure(
+            destination, FailureCode.EXECUTION_CANCELLED,
+            "cancelamento solicitado antes do início",
+            attempt_id=attempt_id, metrics=measured, stage=last_stage,
+        )
+        raise GenerateError(
+            cancelled_report["error"]["detail"], FailureCode.EXECUTION_CANCELLED,
+            report=cancelled_report,
+        )
     try:
         process = subprocess.Popen(
             command,
@@ -214,7 +259,7 @@ def run_generation_process(
         if progress is not None:
             progress("environment")
         _cleanup_attempt(
-            parent=destination.parent, attempt_id=attempt_id,
+            destination=destination, attempt_id=attempt_id,
             progress_path=progress_path, clock=clock,
         )
         failure_report = _write_runner_failure(
@@ -239,8 +284,12 @@ def run_generation_process(
                 break
             detail = "cancelamento solicitado durante a execução"
             measured = clock.snapshot()
+            _discard_uncommitted_destination(
+                destination, attempt_id,
+                destination_was_occupied=destination_was_occupied,
+            )
             _cleanup_attempt(
-                parent=destination.parent, attempt_id=attempt_id,
+                destination=destination, attempt_id=attempt_id,
                 progress_path=progress_path, clock=clock,
             )
             cancelled_report = _write_runner_failure(
@@ -259,13 +308,18 @@ def run_generation_process(
                 break
             detail = f"processo Blender excedeu {timeout:g} segundos e foi encerrado"
             measured = clock.snapshot()
+            _discard_uncommitted_destination(
+                destination, attempt_id,
+                destination_was_occupied=destination_was_occupied,
+            )
             _cleanup_attempt(
-                parent=destination.parent, attempt_id=attempt_id,
+                destination=destination, attempt_id=attempt_id,
                 progress_path=progress_path, clock=clock,
             )
             timeout_report = _write_runner_failure(
                 destination, FailureCode.PROCESS_TIMEOUT, detail,
                 attempt_id=attempt_id, metrics=measured,
+                stage=_furthest_stage(last_stage, FailureCode.PROCESS_TIMEOUT),
             )
             raise GenerateError(
                 timeout_report["error"]["detail"], FailureCode.PROCESS_TIMEOUT,
@@ -300,8 +354,14 @@ def run_generation_process(
                         f"{process.returncode}"
                     )
                 measured = clock.snapshot()
+                _discard_uncommitted_destination(
+                    destination, attempt_id,
+                    destination_was_occupied=destination_was_occupied,
+                )
+                _recover_interrupted_replacement(destination, attempt_id)
                 report = _write_runner_failure(
-                    destination, code, detail, attempt_id=attempt_id, metrics=measured
+                    destination, code, detail, attempt_id=attempt_id, metrics=measured,
+                    stage=_furthest_stage(last_stage, code),
                 )
             try:
                 code = FailureCode(report["error"]["code"])
@@ -315,9 +375,10 @@ def run_generation_process(
                 report = _write_runner_failure(
                     destination, code, detail,
                     attempt_id=attempt_id, metrics=measured,
+                    stage=_furthest_stage(last_stage, code),
                 )
             _cleanup_attempt(
-                parent=destination.parent, attempt_id=attempt_id,
+                destination=destination, attempt_id=attempt_id,
                 progress_path=progress_path, clock=clock,
             )
             raise GenerateError(detail, code, report=report)
@@ -329,7 +390,7 @@ def run_generation_process(
             if not destination_was_occupied and destination.exists():
                 shutil.rmtree(destination, ignore_errors=True)
             _cleanup_attempt(
-                parent=destination.parent, attempt_id=attempt_id,
+                destination=destination, attempt_id=attempt_id,
                 progress_path=progress_path, clock=clock,
             )
             unavailable_report = _write_runner_failure(

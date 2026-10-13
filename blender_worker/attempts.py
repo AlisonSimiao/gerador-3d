@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from .failures import FailureCode
 from .reports import (
@@ -19,6 +19,7 @@ from .reports import (
     measured_failure_report,
     publish_failure_report,
 )
+from .schema import SpecError, load_spec, spec_to_dict
 
 
 @dataclass(frozen=True)
@@ -203,8 +204,13 @@ class GenerationAttemptExecutor:
             publish_failure_report(attempt.destination, report)
             return CancelledAttempt(attempt.attempt_id, report)
         try:
-            serialized_spec = json.dumps(attempt.spec, ensure_ascii=False)
-        except (TypeError, ValueError) as error:
+            # This is the authoritative schema parser, used as a parent-side
+            # preflight so rejected input never starts the Blender process.
+            serialized_spec = json.dumps(
+                spec_to_dict(load_spec(cast(dict[str, Any], attempt.spec))),
+                ensure_ascii=False,
+            )
+        except (SpecError, TypeError, ValueError) as error:
             progress.emit("input")
             report = measured_failure_report(
                 attempt_id=attempt.attempt_id.value,
@@ -214,6 +220,17 @@ class GenerationAttemptExecutor:
             )
             publish_failure_report(attempt.destination, report)
             return FailedAttempt(attempt.attempt_id, report)
+
+        if attempt.cancellation is not None and attempt.cancellation.is_cancelled:
+            progress.emit("input")
+            report = measured_failure_report(
+                attempt_id=attempt.attempt_id.value,
+                code=FailureCode.EXECUTION_CANCELLED,
+                detail="cancelamento solicitado antes do início",
+                input_value=attempt.spec,
+            )
+            publish_failure_report(attempt.destination, report)
+            return CancelledAttempt(attempt.attempt_id, report)
 
         # The existing process runner remains the single official execution
         # implementation while this new interface is introduced beside it.

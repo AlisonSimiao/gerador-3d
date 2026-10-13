@@ -17,8 +17,8 @@
 - [x] Testes de relatório demonstram contrato uniforme, identidade da Tentativa, Impressão Digital, hash segura e etapas coerentes.
 - [x] Testes duplicados de wrappers rasos são removidos somente depois de existir cobertura equivalente no seam do executor.
 - [x] Não são introduzidos BullMQ, PostgreSQL, Next.js, S3, SSE, rede durante geração ou uma segunda implementação da pipeline.
-- [x] Testes rápidos, typecheck e suíte oficial ficam verdes no ambiente correspondente antes da conclusão do ticket.
+- [ ] Testes rápidos, typecheck e suíte oficial ficam verdes no ambiente correspondente antes da conclusão do ticket.
 
 ## Answer
 
-Typecheck limpo, 241 testes rápidos verdes e suíte completa com 270 testes verdes e 1 skip do Khronos Validator externo não configurado. As integrações reais preservaram os quatro Tipos, reimportação, Preview e publicação.
+Typecheck limpo, 246 testes rápidos verdes e suíte completa com 275 testes verdes e 1 skip do Khronos Validator externo não configurado. As integrações reais preservaram os quatro Tipos, reimportação, Preview e publicação. O ticket permanece aberto até que o gate obrigatório do Khronos Validator seja executado em um ambiente que disponibilize o binário.

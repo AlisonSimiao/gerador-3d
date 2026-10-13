@@ -53,13 +53,19 @@ def test_generated_attempt_identities_are_distinct() -> None:
 
 def test_invalid_input_returns_a_correlated_safe_failure(tmp_path: Path) -> None:
     secret = "não copiar este valor arbitrário"
+    marker = tmp_path / "launched"
+    executable = tmp_path / "marker-python"
+    executable.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    executable.chmod(0o755)
     attempt = GenerationAttempt(
         attempt_id=AttemptId("attempt-invalid-1"),
         spec={"spec_version": 1, "type": "house", "seed": 42, "unknown": secret},
         destination=tmp_path / "result",
     )
 
-    outcome = GenerationAttemptExecutor().execute(attempt)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("GERADOR_3D_PYTHON", str(executable))
+        outcome = GenerationAttemptExecutor().execute(attempt)
 
     assert isinstance(outcome, FailedAttempt)
     assert outcome.attempt_id == AttemptId("attempt-invalid-1")
@@ -68,6 +74,7 @@ def test_invalid_input_returns_a_correlated_safe_failure(tmp_path: Path) -> None
     assert outcome.report["input_hash"].startswith("sha256:")
     assert secret not in str(outcome.report)
     assert sorted(path.name for path in (tmp_path / "result").iterdir()) == ["report.json"]
+    assert not marker.exists()
 
 
 def test_invalid_input_progress_is_optional_and_observational(tmp_path: Path) -> None:
@@ -418,6 +425,56 @@ def test_timeout_is_distinct_and_cleans_the_attempt(
     assert not list(tmp_path.glob(".attempt-*.json"))
 
 
+def test_timeout_report_keeps_the_furthest_observed_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "rendering-python"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "printf '{\"stage\":\"render\"}\\n' > \"$GERADOR_3D_PROGRESS_PATH\"\n"
+        "sleep 30\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("GERADOR_3D_PYTHON", str(executable))
+
+    outcome = GenerationAttemptExecutor().execute(GenerationAttempt(
+        AttemptId("attempt-timeout-stage"), _valid_house(), tmp_path / "result",
+        timeout_seconds=0.1,
+    ))
+
+    assert isinstance(outcome, FailedAttempt)
+    assert outcome.report["error"]["code"] == "environment.timeout"
+    assert outcome.report["stage"] == "render"
+
+
+def test_timeout_discards_assets_written_before_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "partial-python"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "while [ $# -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"--out\" ]; then shift; out=$1; fi\n"
+        "  shift\n"
+        "done\n"
+        "mkdir -p \"$out\"\n"
+        "printf partial > \"$out/model.glb\"\n"
+        "sleep 30\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("GERADOR_3D_PYTHON", str(executable))
+
+    outcome = GenerationAttemptExecutor().execute(GenerationAttempt(
+        AttemptId("attempt-timeout-partial"), _valid_house(), tmp_path / "result",
+        timeout_seconds=0.1,
+    ))
+
+    assert isinstance(outcome, FailedAttempt)
+    assert sorted(path.name for path in (tmp_path / "result").iterdir()) == [
+        "report.json",
+    ]
+
+
 def test_cancellation_before_start_never_launches_the_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -437,6 +494,35 @@ def test_cancellation_before_start_never_launches_the_process(
     assert isinstance(outcome, CancelledAttempt)
     assert outcome.report["error"]["code"] == "execution.cancelled"
     assert outcome.report["error"]["taxonomy_version"] == 2
+    assert not marker.exists()
+
+
+def test_cancellation_in_the_prelaunch_window_never_starts_the_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CancelAtRunnerBoundary:
+        def __init__(self) -> None:
+            self.checks = 0
+
+        @property
+        def is_cancelled(self) -> bool:
+            self.checks += 1
+            return self.checks >= 3
+
+    marker = tmp_path / "launched"
+    executable = tmp_path / "marker-python"
+    executable.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("GERADOR_3D_PYTHON", str(executable))
+    cancellation = CancelAtRunnerBoundary()
+
+    outcome = GenerationAttemptExecutor().execute(GenerationAttempt(
+        AttemptId("attempt-cancelled-prelaunch"), _valid_house(),
+        tmp_path / "result", cancellation=cancellation,  # type: ignore[arg-type]
+    ))
+
+    assert isinstance(outcome, CancelledAttempt)
+    assert outcome.report["stage"] == "input"
     assert not marker.exists()
 
 
@@ -628,6 +714,66 @@ def test_abnormal_child_cleanup_removes_only_its_staging_directory(
     assert outcome.report["error"]["code"] == "environment.unavailable"
     assert not list(tmp_path.glob(".generation-*"))
     assert not list(tmp_path.glob(".attempt-*"))
+
+
+def test_abnormal_child_report_keeps_the_furthest_observed_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "crashing-python"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "printf '{\"stage\":\"reimport\"}\\n' > \"$GERADOR_3D_PROGRESS_PATH\"\n"
+        "exit 7\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("GERADOR_3D_PYTHON", str(executable))
+
+    outcome = GenerationAttemptExecutor().execute(GenerationAttempt(
+        AttemptId("attempt-crash-stage"), _valid_house(), tmp_path / "result",
+    ))
+
+    assert isinstance(outcome, FailedAttempt)
+    assert outcome.report["stage"] == "reimport"
+
+
+def test_interrupted_forced_replacement_restores_the_previous_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempt_id = "attempt-force-interrupted"
+    token = attempt_storage_token(attempt_id)
+    destination = tmp_path / "result"
+    destination.mkdir()
+    previous = {
+        "model.glb": b"previous-glb",
+        "preview.png": b"previous-png",
+        "report.json": b'{"previous":true}',
+    }
+    for name, content in previous.items():
+        (destination / name).write_bytes(content)
+    executable = tmp_path / "interruptible-publisher"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "while [ $# -gt 0 ]; do\n"
+        "  if [ \"$1\" = \"--out\" ]; then shift; out=$1; fi\n"
+        "  shift\n"
+        "done\n"
+        f'mv "$out" "$out.previous-{token}"\n'
+        f'mkdir -p "$(dirname "$out")/.generation-{token}-orphan"\n'
+        "sleep 30\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("GERADOR_3D_PYTHON", str(executable))
+
+    outcome = GenerationAttemptExecutor().execute(GenerationAttempt(
+        AttemptId(attempt_id), _valid_house(), destination,
+        existing_result=ExistingResultPolicy.REPLACE, timeout_seconds=0.1,
+    ))
+
+    assert isinstance(outcome, FailedAttempt)
+    assert outcome.report["error"]["code"] == "environment.timeout"
+    assert {name: (destination / name).read_bytes() for name in previous} == previous
+    assert not list(tmp_path.glob("result.previous-*"))
+    assert not list(tmp_path.glob(".generation-*"))
 
 
 def test_environment_records_configured_build_commit(monkeypatch: pytest.MonkeyPatch) -> None:

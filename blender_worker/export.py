@@ -22,6 +22,7 @@ from .schema import AnySpec, load_spec_file, spec_to_dict
 from .validators import check_glb
 from .failures import FailureCode
 from .reports import (
+    attempt_backup_path,
     attempt_storage_token,
     failure_report,
     publish_failure_report,
@@ -156,12 +157,18 @@ def _build_scene(mesh: MeshData, spec_type: str) -> None:
 
 
 def _publish(stage: str, destination: str) -> None:
-    backup = destination + ".previous"
+    attempt_id = os.environ.get("GERADOR_3D_ATTEMPT_ID", "local")
+    backup = str(attempt_backup_path(Path(destination), attempt_id))
     if os.path.exists(backup):
         shutil.rmtree(backup)
     if os.path.exists(destination):
         os.replace(destination, backup)
-    os.replace(stage, destination)
+    try:
+        os.replace(stage, destination)
+    except BaseException:
+        if os.path.exists(backup) and not os.path.exists(destination):
+            os.replace(backup, destination)
+        raise
     if os.path.exists(backup):
         shutil.rmtree(backup)
 

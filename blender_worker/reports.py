@@ -22,6 +22,12 @@ def attempt_storage_token(attempt_id: str) -> str:
     return hashlib.sha256(attempt_id.encode()).hexdigest()[:32]
 
 
+def attempt_backup_path(destination: Path, attempt_id: str) -> Path:
+    """Name the recoverable backup owned by one replacement attempt."""
+    token = attempt_storage_token(attempt_id)
+    return destination.with_name(f"{destination.name}.previous-{token}")
+
+
 def safe_input_hash(value: object) -> str:
     """Correlate rejected JSON without copying its contents into a report."""
     try:
