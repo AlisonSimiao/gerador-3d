@@ -17,6 +17,15 @@ from .attempts import (
 )
 from .failures import MESSAGES, FailureCode
 
+#: Marco 1 exit-code contract: 0 success, 1 unsuccessful attempt, 2 misuse.
+EXIT_SUCCESS = 0
+EXIT_UNSUCCESSFUL = 1
+EXIT_MISUSE = 2
+#: A cancellation is an intentional interruption, not a broken Gerador or
+#: environment, so shell automation gets the conventional 128+SIGINT status
+#: while stderr keeps the same structured `execution.cancelled` code.
+EXIT_CANCELLED = 130
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="blender-worker", description="Gerador 3D low-poly (Marco 1)")
@@ -47,8 +56,8 @@ def main(argv: list[str] | None = None) -> int:
                 timeout_seconds=args.timeout_seconds,
             ))
         except ValueError as input_error:
-            print(f"input.invalid: {input_error}", file=sys.stderr)
-            return 1
+            print(f"{FailureCode.INPUT_INVALID.value}: {input_error}", file=sys.stderr)
+            return EXIT_UNSUCCESSFUL
         if isinstance(outcome, (FailedAttempt, CancelledAttempt)):
             terminal_error = outcome.report["error"]
             code = str(terminal_error["code"])
@@ -57,11 +66,13 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError:
                 message = str(terminal_error["message"])
             print(f"{code}: {message}", file=sys.stderr)
-            return 1
+            if isinstance(outcome, CancelledAttempt):
+                return EXIT_CANCELLED
+            return EXIT_UNSUCCESSFUL
         report = outcome.report
         print(f"ok: {report['tri_count']} tris -> {args.out}")
-        return 0
-    return 2
+        return EXIT_SUCCESS
+    return EXIT_MISUSE
 
 
 if __name__ == "__main__":
